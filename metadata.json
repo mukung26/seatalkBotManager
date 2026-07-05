@@ -1,0 +1,6 @@
+{
+  "name": "SeaTalk Attendance Bot",
+  "description": "Interactive message builder and attendance logger for SeaTalk, integrated with Google Sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,51 @@
+const markdownStructure = `# SeaTalk Bot Dashboard - Architecture & Structure
+
+This document outlines the detailed file structure and architectural breakdown of the SeaTalk Bot Dashboard project.
+
+## Directory Structure
+```text
+/
+├── cloudflare-worker.js         # Backend: Cloudflare Worker handling SeaTalk webhooks & APIs
+├── server.ts                    # Backend: Node.js Express + Vite server for full-stack execution
+├── src/                         # Frontend: React Application
+│   ├── App.tsx                  # Core UI: SeaTalk dashboard, message builder, and settings
+│   ├── main.tsx                 # Frontend entry point
+│   ├── index.css                # Global Tailwind styles
+│   └── lib/
+│       └── utils.ts             # Tailwind CSS utility functions (cn)
+├── components/                  # UI Components (shadcn/ui)
+├── components.json              # shadcn/ui configuration
+├── package.json                 # Project dependencies & scripts
+├── vite.config.ts               # Vite configuration
+├── tsconfig.json                # TypeScript configuration
+├── index.html                   # HTML Entry template
+├── metadata.json                # Project metadata/permissions
+├── firebase-applet-config.json  # Firebase configuration details
+├── .env.example                 # Required environment variables
+└── README-Cloudflare.md         # Deployment instructions for the Cloudflare Worker
+```
+
+## Architectural Components
+
+### 1. Frontend (`src/App.tsx`)
+A unified Single-Page Application (SPA) built with React and Tailwind CSS.
+- **Chat Dashboard**: Integrates with backend endpoints to fetch recent SeaTalk messages and group chat streams. Shows message history with visual indicators for attachments.
+- **Interactive Message Builder**: A robust UI for prototyping and deploying custom JSON interactive messages adhering to the SeaTalk Open Platform Layout Spec. Supports translations, interactive buttons, logic preview, and direct formulation.
+- **Settings & Setup Guide**: Provides simple toggles and input fields for syncing the user's specific Google Apps script and Google Sheets webhook.
+
+### 2. Backend API (`cloudflare-worker.js`)
+Serves as the primary operational gateway between the frontend, the SeaTalk API, and external systems (Firebase/Google Sheets).
+- **Webhook Listener**: Listens to SeaTalk Event Webhooks (`interactive_message_click`, `bot_added_to_group_chat`, `message_from_bot_subscriber`, etc.), acting as the main ingress point.
+- **Message Dispatcher**: Constructs valid payloads for `sendPrivateMessage` and `sendGroupMessage`. Supports quoting via `quoted_message_id` and mentions.
+- **Database Agent (Firestore)**: Writes message history logs directly to Firestore endpoints to create an audit/chat trail viewable by the admin.
+- **Google Sheets Integrator**: Relays attendance and callback status metrics securely to Google Apps Script endpoints or direct Google Sheets APIs based on dynamic conditions.
+
+### 3. Server Node (`server.ts`)
+A lightweight Express proxy that spins up Vite middleware during development and provides asset serving in production scenarios.
+
+## Flow Diagrams
+
+- **User messages Bot**: `SeaTalk -> Webhook Listener (cloudflare-worker.js) -> Firestore Data -> Bot Replies`
+- **Dashboard API**: `React Frontend -> /api/dashboard/* -> Cloudflare Worker / Firestore -> Returns data stream to Admin UI`
+- **Interactive Button Click**: `SeaTalk -> Webhook (bot) -> Logic Evaluation -> Appends to Google Sheet -> Bot gives feedback response.`
+`;
