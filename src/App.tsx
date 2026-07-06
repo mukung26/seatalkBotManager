@@ -46,6 +46,7 @@ import {
   File,
   Image as ImageIcon,
   FileText,
+  Folder,
   Blocks,
   Languages,
   ExternalLink,
@@ -4075,6 +4076,15 @@ function AutoReplyRules() {
                     <Button
                       variant="ghost"
                       size="icon"
+                      className="text-cyan-400 hover:text-cyan-300 hover:bg-cyan-900/30 shrink-0"
+                      onClick={() => toast.info("Organize feature coming soon!")}
+                      title="Organize Link"
+                    >
+                      <Folder size={16} />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       className="text-red-400 hover:text-red-700 hover:bg-red-900/30 shrink-0"
                       onClick={() => handleDeleteRule(r.id)}
                     >
@@ -5734,6 +5744,15 @@ function BroadcastsScheduler() {
                       onClick={() => handleEditClick(b)}
                     >
                       <Edit2 size={16} />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="text-cyan-400 hover:text-cyan-300 hover:bg-cyan-900/30 shrink-0 cursor-pointer"
+                      onClick={() => toast.info("Organize feature coming soon!")}
+                      title="Organize Link"
+                    >
+                      <Folder size={16} />
                     </Button>
                     <Button
                       variant="ghost"
