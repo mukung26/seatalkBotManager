@@ -4594,7 +4594,7 @@ function SettingsPanel() {
             </CardTitle>
           </CardHeader>
           <CardContent className="text-sm text-neutral-600 space-y-4">
-            <p>Follow these steps to fully move off AI Studio.</p>
+            <p>Follow these steps to fully move off jcruspero3263.</p>
             <ul className="space-y-4">
               <li className="flex items-start gap-3">
                 <CheckCircle2
@@ -4606,7 +4606,7 @@ function SettingsPanel() {
                     Export Project
                   </strong>
                   <span className="text-neutral-500">
-                    Go to Settings in the AI Studio IDE and Export the project
+                    Go to Settings in the jcruspero3263 IDE and Export the project
                     as a ZIP or to GitHub.
                   </span>
                 </div>

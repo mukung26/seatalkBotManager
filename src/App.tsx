@@ -63,6 +63,7 @@ import {
   Lock,
   Calendar,
   Search,
+  Layers,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Toaster } from "@/components/ui/sonner";
@@ -146,6 +147,7 @@ import { signInWithPopup, GoogleAuthProvider } from "firebase/auth";
 import { db, auth, googleProvider } from "@/src/lib/firebase";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useBuilderStore } from "./store/useBuilderStore";
 
 // Add motion for animations
 import { motion, AnimatePresence } from "motion/react";
@@ -160,14 +162,28 @@ export default function App() {
   return (
     <div className="flex h-screen bg-black overflow-hidden font-sans">
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
-      <main className="flex-1 overflow-hidden">
-        {activeTab === "chat" && <ChatInterface />}
-        {activeTab === "rules" && <AutoReplyRules />}
-        {activeTab === "broadcasts" && <BroadcastsScheduler />}
-        {activeTab === "playground" && <WorkplacePlayground />}
-        {activeTab === "bot_tools" && <BotToolsPanel />}
-        {activeTab === "logs" && <LogsPanel />}
-        {activeTab === "settings" && <SettingsPanel />}
+      <main className="flex-1 overflow-hidden relative">
+        <div className={`absolute inset-0 ${activeTab === "chat" ? "z-10" : "hidden"}`}>
+          <ChatInterface />
+        </div>
+        <div className={`absolute inset-0 ${activeTab === "rules" ? "z-10" : "hidden"}`}>
+          <AutoReplyRules />
+        </div>
+        <div className={`absolute inset-0 ${activeTab === "broadcasts" ? "z-10" : "hidden"}`}>
+          <BroadcastsScheduler />
+        </div>
+        <div className={`absolute inset-0 ${activeTab === "playground" ? "z-10" : "hidden"}`}>
+          <WorkplacePlayground />
+        </div>
+        <div className={`absolute inset-0 ${activeTab === "bot_tools" ? "z-10" : "hidden"}`}>
+          <BotToolsPanel />
+        </div>
+        <div className={`absolute inset-0 ${activeTab === "logs" ? "z-10" : "hidden"}`}>
+          <LogsPanel />
+        </div>
+        <div className={`absolute inset-0 ${activeTab === "settings" ? "z-10" : "hidden"}`}>
+          <SettingsPanel />
+        </div>
       </main>
       <Toaster />
     </div>
@@ -324,7 +340,7 @@ function ChatInterface() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // --- Customizable Interactive Message Card Builder ---
-  const [isBuilderOpen, setIsBuilderOpen] = useState(false);
+  const { isOpen: isBuilderOpen, closeBuilder, target: builderTarget, openBuilder, initialPayload, onSaveCallback } = useBuilderStore();
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [builderLangMode, setBuilderLangMode] = useState<"single" | "dual">(
     "single",
@@ -908,6 +924,15 @@ function ChatInterface() {
       },
     };
 
+    if (builderTarget === "scheduler" || builderTarget === "rule") {
+      if (onSaveCallback) {
+        onSaveCallback(JSON.stringify(messageObj, null, 2));
+      }
+      closeBuilder();
+      toast.success("Interactive Message Card built successfully!");
+      return;
+    }
+
     if (editingMessageId) {
       try {
         const msgRef = doc(db, "messages", editingMessageId);
@@ -915,14 +940,14 @@ function ChatInterface() {
           raw_message: JSON.stringify(messageObj),
         });
         toast.success("Message card updated!");
-        setIsBuilderOpen(false);
+        closeBuilder();
         setEditingMessageId(null);
       } catch (err: any) {
         toast.error("Failed to update: " + err.message);
       }
     } else {
       sendSpecialMessage(messageObj, "[Interactive Message]");
-      setIsBuilderOpen(false);
+      closeBuilder();
       toast.success("Sent customizable interactive message!");
     }
   };
@@ -942,7 +967,7 @@ function ChatInterface() {
       }
 
       setEditingMessageId(m.id);
-      setIsBuilderOpen(true);
+      openBuilder("conversation");
       setActiveBuilderTab("default");
     } catch (err: any) {
       toast.error("Could not parse card for editing: " + err.message);
@@ -1856,7 +1881,7 @@ function ChatInterface() {
                     )}
                     onClick={() => {
                       setEditingMessageId(null);
-                      setIsBuilderOpen(true);
+                      openBuilder("conversation");
                     }}
                     title="Open Interactive Message Card Builder"
                   >
@@ -1944,7 +1969,7 @@ function ChatInterface() {
       </div>
 
       {/* Customizable Interactive Message Card Builder Dialog */}
-      <Dialog open={isBuilderOpen} onOpenChange={setIsBuilderOpen}>
+      <Dialog open={isBuilderOpen} onOpenChange={(open) => !open && closeBuilder()}>
         <DialogContent className="sm:max-w-7xl w-[95vw] h-[90vh] flex flex-col p-0 overflow-hidden bg-[#111] rounded-2xl border border-[#222]">
           <DialogHeader className="shrink-0 border-b border-[#222] p-4 md:p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
             <div className="flex-1 min-w-0">
@@ -3180,7 +3205,7 @@ function ChatInterface() {
             <Button
               variant="ghost"
               className="text-[#666666] hover:text-[#ececec] text-xs font-semibold h-9 px-4 cursor-pointer"
-              onClick={() => setIsBuilderOpen(false)}
+              onClick={() => closeBuilder()}
             >
               Cancel
             </Button>
@@ -3189,7 +3214,11 @@ function ChatInterface() {
               onClick={sendCustomInteractiveMessage}
             >
               <Send size={15} />
-              {editingMessageId ? "Save & Update Card" : "Send Designed Card"}
+              {builderTarget === "scheduler"
+                ? "Save to Scheduler"
+                : editingMessageId
+                  ? "Save & Update Card"
+                  : "Send Designed Card"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3232,6 +3261,9 @@ function parseReplyMessage(reply: string) {
 
 // --- Auto Reply Rules ---
 function AutoReplyRules() {
+  const openBuilder = useBuilderStore((state) => state.openBuilder);
+  const setOnSaveCallback = useBuilderStore((state) => state.setOnSaveCallback);
+
   const INTERACTIVE_TEMPLATES = {
     basic_callback: {
       tag: "interactive_message",
@@ -3840,40 +3872,30 @@ function AutoReplyRules() {
                 )}
 
                 {replyType === "interactive" && (
-                  <div className="space-y-3">
-                    <div className="space-y-1 animate-fadeIn">
-                      <label className="text-xs font-semibold text-[#888888]">
-                        Interactive Message Template
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-sm font-medium">
+                        Interactive Card JSON Builder
                       </label>
-                      <Select value={selectedTemplate} onValueChange={setSelectedTemplate}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="basic_callback">Basic Callback Card</SelectItem>
-                          <SelectItem value="approval_flow">Approval Flow Action Buttons</SelectItem>
-                          <SelectItem value="daily_attendance">Daily Attendance Checkin</SelectItem>
-                          <SelectItem value="external_link">Open Platform API SDK Links</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <p className="text-[10px] text-[#888888]">
-                        Select a predefined card from the Workplace Playground presets.
-                      </p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-3 text-xs text-blue-400 bg-blue-900/20 hover:bg-blue-900/40 font-semibold"
+                        onClick={() => {
+                          setOnSaveCallback((jsonStr) => setReplyMessage(jsonStr));
+                          openBuilder("rule");
+                        }}
+                      >
+                        <Layers className="mr-2" size={14} />
+                        Open Interactive Message Card Builder
+                      </Button>
                     </div>
-
-                    <div className="space-y-1">
-                      <label className="text-sm font-medium">Message Payload (JSON Specification)</label>
-                      <Textarea
-                        value={replyMessage}
-                        onChange={(e) => setReplyMessage(e.target.value)}
-                        rows={8}
-                        className="font-mono text-xs"
-                        placeholder='{"tag": "interactive_message", ...}'
-                      />
-                      <p className="text-[10px] text-[#888888] italic">
-                        Verify that this is a valid JSON interactive card adhering to the SeaTalk specification schema.
-                      </p>
-                    </div>
+                    <Textarea
+                      className="min-h-[250px] bg-[#000] border-[#333] text-sm font-mono text-green-400 placeholder:text-[#555] rounded-md focus-visible:ring-1 focus-visible:ring-blue-500"
+                      value={replyMessage}
+                      onChange={(e) => setReplyMessage(e.target.value)}
+                      placeholder="Paste or build Interactive JSON here..."
+                    />
                   </div>
                 )}
               </div>
@@ -4684,7 +4706,7 @@ function SettingsPanel() {
             </CardTitle>
           </CardHeader>
           <CardContent className="text-sm text-[#888888] space-y-4">
-            <p>Follow these steps to fully move off AI Studio.</p>
+            <p>Follow these steps to fully move off jcruspero3263.</p>
             <ul className="space-y-4">
               <li className="flex items-start gap-3">
                 <CheckCircle2
@@ -4696,7 +4718,7 @@ function SettingsPanel() {
                     Export Project
                   </strong>
                   <span className="text-[#666666]">
-                    Go to Settings in the AI Studio IDE and Export the project
+                    Go to Settings and Export the project
                     as a ZIP or to GitHub.
                   </span>
                 </div>
@@ -4729,9 +4751,33 @@ function SettingsPanel() {
 // --- Scheduler & Announcement Broadcasts ---
 // ============================================================================
 function BroadcastsScheduler() {
+  const openBuilder = useBuilderStore((state) => state.openBuilder);
+  const setOnSaveCallback = useBuilderStore((state) => state.setOnSaveCallback);
+
   const [broadcasts, setBroadcasts] = useState<any[]>([]);
   const [groups, setGroups] = useState<any[]>([]);
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [editingBroadcastId, setEditingBroadcastId] = useState<string | null>(null);
+
+  const handleEditClick = (b: any) => {
+    setName(b.name);
+    setIntervalVal(b.interval);
+    setScheduledTime(b.scheduled_time || "");
+    setScheduledDate(b.scheduled_date || "");
+    setChatType(b.chat_type);
+    setTargetId(b.target_id);
+    setMsgType(b.msg_type || "text");
+    if (b.msg_type === "interactive") {
+      setInteractiveJson(b.content);
+      setContent("");
+    } else {
+      setContent(b.content);
+      setInteractiveJson("");
+    }
+    setEditingBroadcastId(b.id);
+    setIsAddOpen(true);
+  };
+
   const [name, setName] = useState("");
   const [interval, setIntervalVal] = useState("manual_time");
   const [scheduledTime, setScheduledTime] = useState("");
@@ -5003,38 +5049,54 @@ function BroadcastsScheduler() {
     }
 
     try {
-      await addDoc(collection(db, "broadcasts"), {
-        name,
-        interval,
-        scheduled_time: interval === "manual_time" ? scheduledTime : null,
-        scheduled_date: interval === "weekly" ? scheduledDate : null,
-        chat_type: chatType,
-        target_id: targetId,
-        msg_type: msgType,
-        content: finalContent,
-        is_active: true,
-        last_run_at: null,
-        created_at: new Date().toISOString(),
-      });
-
-      try {
-        await addDoc(collection(db, "logs"), {
-          timestamp: new Date().toISOString(),
-          level: "info",
-          message: `Broadcast Scheduled: ${name}`,
-          details: `{ "interval": "${interval}", "target_id": "${targetId}" }`,
+      if (editingBroadcastId) {
+        await updateDoc(doc(db, "broadcasts", editingBroadcastId), {
+          name,
+          interval,
+          scheduled_time: interval === "manual_time" ? scheduledTime : null,
+          scheduled_date: interval === "weekly" ? scheduledDate : null,
+          chat_type: chatType,
+          target_id: targetId,
+          msg_type: msgType,
+          content: finalContent,
         });
-      } catch (e) {}
+        toast.success("Broadcast Updated Successfully!");
+      } else {
+        await addDoc(collection(db, "broadcasts"), {
+          name,
+          interval,
+          scheduled_time: interval === "manual_time" ? scheduledTime : null,
+          scheduled_date: interval === "weekly" ? scheduledDate : null,
+          chat_type: chatType,
+          target_id: targetId,
+          msg_type: msgType,
+          content: finalContent,
+          is_active: true,
+          last_run_at: null,
+          created_at: new Date().toISOString(),
+        });
+        
+        try {
+          await addDoc(collection(db, "logs"), {
+            timestamp: new Date().toISOString(),
+            level: "info",
+            message: `Broadcast Scheduled: ${name}`,
+            details: `{ "interval": "${interval}", "target_id": "${targetId}" }`,
+          });
+        } catch (e) {}
+        
+        toast.success("Broadcast Scheduled Successfully!");
+      }
 
       setIsAddOpen(false);
+      setEditingBroadcastId(null);
       setName("");
       setTargetId("");
       setContent("");
       setScheduledTime("");
       setScheduledDate("");
-      toast.success("Broadcast Scheduled Successfully!");
     } catch (err) {
-      toast.error("Failed to schedule broadcast.");
+      toast.error(`Failed to ${editingBroadcastId ? "update" : "schedule"} broadcast.`);
     }
   };
 
@@ -5110,12 +5172,26 @@ function BroadcastsScheduler() {
           </div>
           <Button
             className="gap-2 bg-white font-semibold"
-            onClick={() => setIsAddOpen(true)}
+            onClick={() => {
+              setEditingBroadcastId(null);
+              setName("");
+              setIntervalVal("manual_time");
+              setScheduledTime("");
+              setScheduledDate("");
+              setChatType("private");
+              setTargetId("");
+              setMsgType("text");
+              setContent("");
+              setIsAddOpen(true);
+            }}
           >
             <Plus size={16} /> New Broadcast
           </Button>
 
-          <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
+          <Dialog open={isAddOpen} onOpenChange={(open) => {
+            if (!open) setEditingBroadcastId(null);
+            setIsAddOpen(open);
+          }}>
             <DialogContent className="max-w-xl">
               <DialogHeader>
                 <DialogTitle className="flex items-center gap-2">
@@ -5123,7 +5199,7 @@ function BroadcastsScheduler() {
                     className="text-white hover:scale-110 transition shrink-0"
                     size={20}
                   />
-                  Schedule New Announcement
+                  {editingBroadcastId ? "Edit Announcement" : "Schedule New Announcement"}
                 </DialogTitle>
               </DialogHeader>
               <div className="flex flex-col gap-4 py-4 max-h-[70vh] overflow-y-auto">
@@ -5476,41 +5552,30 @@ function BroadcastsScheduler() {
                 )}
 
                 {msgType === "interactive" && (
-                  <div className="space-y-3">
-                    <div className="space-y-1 animate-fadeIn">
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between mb-1">
                       <label className="text-xs font-semibold text-[#888888]">
-                        Interactive Card Template
+                        Interactive Card JSON Builder
                       </label>
-                      <Select value={schedulerTemplate} onValueChange={setSchedulerTemplate}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="basic_callback">Basic Callback Card</SelectItem>
-                          <SelectItem value="approval_flow">Approval Flow Action Buttons</SelectItem>
-                          <SelectItem value="daily_attendance">Daily Attendance Checkin</SelectItem>
-                          <SelectItem value="external_link">Open Platform API SDK Links</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <p className="text-[10px] text-[#888888]">
-                        Select a predefined card from the Workplace Playground presets.
-                      </p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-3 text-xs text-blue-400 bg-blue-900/20 hover:bg-blue-900/40 font-semibold"
+                        onClick={() => {
+                          setOnSaveCallback((jsonStr) => setInteractiveJson(jsonStr));
+                          openBuilder("scheduler");
+                        }}
+                      >
+                        <Layers className="mr-2" size={14} />
+                        Open Interactive Message Card Builder
+                      </Button>
                     </div>
-
-                    <div className="space-y-1">
-                      <label className="text-xs font-semibold text-[#888888]">
-                        Interactive JSON Configuration (Playground Spec)
-                      </label>
-                      <Textarea
-                        value={interactiveJson}
-                        onChange={(e) => setInteractiveJson(e.target.value)}
-                        rows={8}
-                        className="font-mono text-xs text-[#ececec] bg-[#0a0a0a] border border-[#222] p-3 rounded-lg"
-                      />
-                      <p className="text-[10px] text-[#888888] italic">
-                        The raw JSON payload specifies the custom elements for SeaTalk interactive rendering.
-                      </p>
-                    </div>
+                    <Textarea
+                      className="min-h-[250px] bg-[#000] border-[#333] text-sm font-mono text-green-400 placeholder:text-[#555] rounded-md focus-visible:ring-1 focus-visible:ring-blue-500"
+                      value={interactiveJson}
+                      onChange={(e) => setInteractiveJson(e.target.value)}
+                      placeholder="Paste or build Interactive JSON here..."
+                    />
                   </div>
                 )}
               </div>
@@ -5522,7 +5587,7 @@ function BroadcastsScheduler() {
                   className="bg-white font-bold"
                   onClick={handleAddBroadcast}
                 >
-                  Schedule Broadcast
+                  {editingBroadcastId ? "Save Changes" : "Schedule Broadcast"}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -5541,7 +5606,18 @@ function BroadcastsScheduler() {
                   Define automated periodic transmissions or emergency
                   notifications to coordinate with your employees.
                 </p>
-                <Button variant="outline" onClick={() => setIsAddOpen(true)}>
+                <Button variant="outline" onClick={() => {
+                  setEditingBroadcastId(null);
+                  setName("");
+                  setIntervalVal("manual_time");
+                  setScheduledTime("");
+                  setScheduledDate("");
+                  setChatType("private");
+                  setTargetId("");
+                  setMsgType("text");
+                  setContent("");
+                  setIsAddOpen(true);
+                }}>
                   Create background broadcast task
                 </Button>
               </CardContent>
@@ -5650,6 +5726,14 @@ function BroadcastsScheduler() {
                       variant="outline"
                     >
                       Trigger Now
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="text-[#888888] hover:text-[#ededed] hover:bg-neutral-800 shrink-0 cursor-pointer"
+                      onClick={() => handleEditClick(b)}
+                    >
+                      <Edit2 size={16} />
                     </Button>
                     <Button
                       variant="ghost"

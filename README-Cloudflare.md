@@ -1,6 +1,6 @@
 # Transferring your Bot to Cloudflare & Firebase
 
-To move your entire SeaTalk Bot application out of AI Studio and host it on **Cloudflare** with **Firebase** as the database, you will split the project into two parts:
+To move your entire SeaTalk Bot application out of jcruspero3263 and host it on **Cloudflare** with **Firebase** as the database, you will split the project into two parts:
 
 1. **The Backend Webhook (Cloudflare Workers)**: Handles incoming messages from SeaTalk, automatically replies to users, and saves chat history into Firebase Firestore.
 2. **The Frontend Admin Dashboard (Cloudflare Pages)**: A React website where you can log in, view conversations, add auto-reply rules, and reply to users manually.
@@ -29,7 +29,7 @@ To move your entire SeaTalk Bot application out of AI Studio and host it on **Cl
 
 ## Phase 3: Deploying the Frontend Dashboard to Cloudflare Pages
 
-1. In your project (you can download the files from AI Studio using the "Export" button in settings), open `src/lib/firebase.ts` and replace the placeholder config with your actual Firebase config.
+1. In your project (you can download the files from jcruspero3263 using the "Export" button in settings), open `src/lib/firebase.ts` and replace the placeholder config with your actual Firebase config.
 2. Open your terminal on your computer and run:
    ```bash
    npm install
