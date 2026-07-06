@@ -168,6 +168,24 @@ const getInitialTab = () => {
   return "chat";
 };
 
+function LazyTab({ active, children }: { active: boolean, children: React.ReactNode }) {
+  const [hasBeenActive, setHasBeenActive] = useState(active);
+  
+  useEffect(() => {
+    if (active && !hasBeenActive) {
+      setHasBeenActive(true);
+    }
+  }, [active, hasBeenActive]);
+
+  if (!hasBeenActive) return null;
+
+  return (
+    <div className={`absolute inset-0 ${active ? "z-10" : "hidden"}`}>
+      {children}
+    </div>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState(getInitialTab);
 
@@ -198,27 +216,27 @@ export default function App() {
     <div className="flex h-screen bg-black overflow-hidden font-sans">
       <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />
       <main className="flex-1 overflow-hidden relative">
-        <div className={`absolute inset-0 ${activeTab === "chat" ? "z-10" : "hidden"}`}>
+        <LazyTab active={activeTab === "chat"}>
           <ChatInterface />
-        </div>
-        <div className={`absolute inset-0 ${activeTab === "rules" ? "z-10" : "hidden"}`}>
+        </LazyTab>
+        <LazyTab active={activeTab === "rules"}>
           <AutoReplyRules />
-        </div>
-        <div className={`absolute inset-0 ${activeTab === "broadcasts" ? "z-10" : "hidden"}`}>
+        </LazyTab>
+        <LazyTab active={activeTab === "broadcasts"}>
           <BroadcastsScheduler />
-        </div>
-        <div className={`absolute inset-0 ${activeTab === "playground" ? "z-10" : "hidden"}`}>
+        </LazyTab>
+        <LazyTab active={activeTab === "playground"}>
           <WorkplacePlayground />
-        </div>
-        <div className={`absolute inset-0 ${activeTab === "bot_tools" ? "z-10" : "hidden"}`}>
+        </LazyTab>
+        <LazyTab active={activeTab === "bot_tools"}>
           <BotToolsPanel />
-        </div>
-        <div className={`absolute inset-0 ${activeTab === "logs" ? "z-10" : "hidden"}`}>
+        </LazyTab>
+        <LazyTab active={activeTab === "logs"}>
           <LogsPanel />
-        </div>
-        <div className={`absolute inset-0 ${activeTab === "settings" ? "z-10" : "hidden"}`}>
+        </LazyTab>
+        <LazyTab active={activeTab === "settings"}>
           <SettingsPanel />
-        </div>
+        </LazyTab>
       </main>
       <Toaster />
     </div>
