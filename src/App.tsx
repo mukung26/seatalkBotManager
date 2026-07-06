@@ -157,12 +157,46 @@ import { BotToolsPanel } from "./BotToolsPanel";
 // SET THIS to your Cloudflare Worker URL once deployed
 const WORKER_URL = "https://testbotworker.jcruspero3263.workers.dev"; // e.g., https://seatalk-bot-webhook.username.workers.dev
 
+const getInitialTab = () => {
+  const path = window.location.pathname;
+  if (path === "/auto-replies") return "rules";
+  if (path === "/scheduler") return "broadcasts";
+  if (path === "/playground") return "playground";
+  if (path === "/developer-api") return "bot_tools";
+  if (path === "/logs") return "logs";
+  if (path === "/settings") return "settings";
+  return "chat";
+};
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState("chat");
+  const [activeTab, setActiveTab] = useState(getInitialTab);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setActiveTab(getInitialTab());
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab);
+    let path = "/";
+    if (tab === "rules") path = "/auto-replies";
+    else if (tab === "broadcasts") path = "/scheduler";
+    else if (tab === "playground") path = "/playground";
+    else if (tab === "bot_tools") path = "/developer-api";
+    else if (tab === "logs") path = "/logs";
+    else if (tab === "settings") path = "/settings";
+    
+    if (window.location.pathname !== path) {
+      window.history.pushState(null, "", path);
+    }
+  };
 
   return (
     <div className="flex h-screen bg-black overflow-hidden font-sans">
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+      <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />
       <main className="flex-1 overflow-hidden relative">
         <div className={`absolute inset-0 ${activeTab === "chat" ? "z-10" : "hidden"}`}>
           <ChatInterface />
