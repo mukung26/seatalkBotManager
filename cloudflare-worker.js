@@ -795,27 +795,58 @@ async function runScheduledBroadcasts(env) {
 }
 
 async function callCloudflareAI(env, messageText) {
-  if (!env.AI) {
-    return null;
-  }
-  try {
-    const aiResponse = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
-      messages: [
-        { 
-          role: "system", 
-          content: "You are a friendly, professional Customer Service Assistant for Shopee Choice. Provide short, concise, and helpful answers. Do not use markdown formatting that isn't compatible with standard chat apps." 
-        },
-        { 
-          role: "user", 
-          content: messageText 
-        }
-      ]
+  const aiBinding = env.AI || env.ai || env.WorkersAI || env.workers_ai;
+  if (!aiBinding) {
+    const keys = Object.keys(env || {});
+    await logEvent(env, "error", "Cloudflare AI Binding is missing or not configured correctly", {
+      available_env_keys: keys,
     });
-    return aiResponse.response;
-  } catch (err) {
-    console.error("AI Error:", err);
-    return `AI Error: ${err.message}`;
+    return "⚠️ AI Assistant error: The Workers AI binding is missing in your Cloudflare Worker settings. Please add the 'Workers AI' binding in your Cloudflare Worker Settings > Variables > Service Bindings / AI Bindings and name the variable 'AI'.";
   }
+  
+  // Try running the requested llama-3.3-70b model, with fallbacks to other models if it fails
+  const models = [
+    '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+    '@cf/meta/llama-3.1-8b-instruct',
+    '@cf/meta/llama-3-8b-instruct',
+    '@cf/meta/llama-2-7b-chat-fp16'
+  ];
+
+  let lastError = null;
+  for (const model of models) {
+    try {
+      await logEvent(env, "info", `Attempting Cloudflare AI inference`, { model, messageText });
+      const aiResponse = await aiBinding.run(model, {
+        messages: [
+          { 
+            role: "system", 
+            content: "You are a friendly, professional Customer Service Assistant for Shopee Choice. Provide short, concise, and helpful answers. Do not use markdown formatting that isn't compatible with standard chat apps." 
+          },
+          { 
+            role: "user", 
+            content: messageText 
+          }
+        ]
+      });
+      
+      const responseText = aiResponse.response || (aiResponse.result && aiResponse.result.response) || aiResponse.text;
+      if (responseText) {
+        return responseText;
+      }
+    } catch (err) {
+      console.error(`AI Model ${model} Error:`, err);
+      lastError = err;
+      await logEvent(env, "warning", `AI Model ${model} failed, trying next fallback`, {
+        error: err.toString(),
+        message: err.message
+      });
+    }
+  }
+
+  await logEvent(env, "error", "All Cloudflare AI model attempts failed", {
+    error: lastError ? lastError.toString() : "Unknown error"
+  });
+  return `⚠️ AI Assistant error: Failed to generate response (${lastError ? lastError.message : "Unknown error"}). Please ensure your Workers AI limits/subscription are active.`;
 }
 
 // --- Event Handlers ---
