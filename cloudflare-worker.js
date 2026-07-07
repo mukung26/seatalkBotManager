@@ -794,6 +794,30 @@ async function runScheduledBroadcasts(env) {
   }
 }
 
+async function callCloudflareAI(env, messageText) {
+  if (!env.AI) {
+    return null;
+  }
+  try {
+    const aiResponse = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+      messages: [
+        { 
+          role: "system", 
+          content: "You are a friendly, professional Customer Service Assistant for Shopee Choice. Provide short, concise, and helpful answers. Do not use markdown formatting that isn't compatible with standard chat apps." 
+        },
+        { 
+          role: "user", 
+          content: messageText 
+        }
+      ]
+    });
+    return aiResponse.response;
+  } catch (err) {
+    console.error("AI Error:", err);
+    return `AI Error: ${err.message}`;
+  }
+}
+
 // --- Event Handlers ---
 export default {
   async fetch(request, env) {
@@ -1187,6 +1211,21 @@ export default {
                 await logEvent(env, "info", "No matching rule found", {
                   content,
                 });
+                
+                const aiResponseText = await callCloudflareAI(env, content);
+                if (aiResponseText) {
+                  const targetThreadId = event.message?.thread_id || event.message_id;
+                  await sendPrivateMessage(env, event.employee_code, aiResponseText, undefined, targetThreadId);
+                  await saveMessage(env, convId, {
+                    sender: "bot",
+                    sender_name: "AI Assistant",
+                    content: aiResponseText,
+                    employee_code: event.employee_code,
+                    is_auto_reply: true,
+                    thread_id: targetThreadId,
+                    tag: "text"
+                  });
+                }
               }
             }
           } else if (
@@ -1268,6 +1307,21 @@ export default {
                 await logEvent(env, "info", "No matching group rule found", {
                   content,
                 });
+                
+                const aiResponseText = await callCloudflareAI(env, content);
+                if (aiResponseText) {
+                  const targetThreadId = event.message?.thread_id || event.message_id;
+                  await sendGroupMessage(env, event.group_id, aiResponseText, targetThreadId, undefined);
+                  await saveMessage(env, convId, {
+                    sender: "bot",
+                    sender_name: "AI Assistant",
+                    content: aiResponseText,
+                    group_id: event.group_id,
+                    thread_id: targetThreadId,
+                    is_auto_reply: true,
+                    tag: "text"
+                  });
+                }
               }
             }
           } else if (eventType === "bot_added_to_group_chat") {
