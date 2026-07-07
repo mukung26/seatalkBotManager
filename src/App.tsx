@@ -4236,6 +4236,34 @@ function LogsPanel() {
           <Button
             variant="outline"
             size="sm"
+            className="bg-red-950/30 border-red-900/50 hover:bg-red-900/50 text-red-400 font-medium"
+            onClick={async () => {
+              if (!window.confirm("Are you sure you want to delete all logs? This cannot be undone.")) return;
+              try {
+                const { getDocs, writeBatch } = await import("firebase/firestore");
+                const snap = await getDocs(query(collection(db, "logs")));
+                if (snap.empty) {
+                  toast.success("No logs to delete.");
+                  return;
+                }
+                const batchSize = 500;
+                for (let i = 0; i < snap.docs.length; i += batchSize) {
+                  const batch = writeBatch(db);
+                  snap.docs.slice(i, i + batchSize).forEach(d => batch.delete(d.ref));
+                  await batch.commit();
+                }
+                toast.success(`Successfully deleted ${snap.docs.length} logs.`);
+              } catch (e: any) {
+                toast.error("Failed to delete logs: " + e.message);
+              }
+            }}
+          >
+            <Trash2 size={16} className="mr-2" />
+            Clear All Logs
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             className="bg-[#222] border-[#333] hover:bg-neutral-800 text-[#a1a1aa]"
             onClick={async () => {
               await addDoc(collection(db, "logs"), {

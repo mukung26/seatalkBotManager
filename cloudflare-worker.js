@@ -16,19 +16,29 @@ const SEATALK_API = "https://openapi.seatalk.io";
 async function logEvent(env, level, message, details = {}) {
   try {
     const timestamp = new Date().toISOString();
-    const res = await firestoreRequest(env, "POST", `/logs`, {
-      fields: {
-        timestamp: { stringValue: timestamp },
-        level: { stringValue: level },
-        message: { stringValue: message },
-        details: { stringValue: JSON.stringify(details) },
-      },
-    });
-    if (res && res.error) {
-      console.error("Firebase rejected log:", res.error);
-      return { success: false, error: res.error };
+    console.log(`[${level.toUpperCase()}] ${message}`, JSON.stringify(details));
+
+    // Only write to Firestore for warnings, errors, or critical dashboard event messages
+    const importantMessages = [
+      "Received SeaTalk webhook",
+      "Sending auto-reply",
+      "Sending group auto-reply",
+      "No matching rule found",
+      "Bot added to group chat",
+      "Bot removed from group chat"
+    ];
+
+    if (level === "error" || level === "warning" || importantMessages.includes(message)) {
+      await firestoreRequest(env, "POST", `/logs`, {
+        fields: {
+          timestamp: { stringValue: timestamp },
+          level: { stringValue: level },
+          message: { stringValue: message },
+          details: { stringValue: JSON.stringify(details) },
+        },
+      });
     }
-    return { success: true, res };
+    return { success: true };
   } catch (e) {
     console.error("Failed to log", e);
     return { success: false, error: e.message };
@@ -180,16 +190,14 @@ async function saveMessage(env, convId, info) {
   });
 
   // Update conversation last message & unread
-  const conv = await firestoreRequest(env, "GET", `/conversations/${convId}`);
   let unread = 0;
-  if (conv && conv.fields && conv.fields.unread_count) {
-    unread = parseInt(conv.fields.unread_count.integerValue || "0", 10);
-  }
-
-  if (!info.is_auto_reply && info.sender !== "admin") {
-    unread += 1;
-  } else {
-    unread = 0;
+  if (!info.is_auto_reply && info.sender !== "admin" && info.sender !== "bot") {
+    const conv = await firestoreRequest(env, "GET", `/conversations/${convId}`);
+    if (conv && conv.fields && conv.fields.unread_count) {
+      unread = parseInt(conv.fields.unread_count.integerValue || "0", 10) + 1;
+    } else {
+      unread = 1;
+    }
   }
 
   await firestoreRequest(
@@ -198,7 +206,7 @@ async function saveMessage(env, convId, info) {
     `/conversations/${convId}?updateMask.fieldPaths=last_message&updateMask.fieldPaths=last_message_time&updateMask.fieldPaths=unread_count`,
     {
       fields: {
-        last_message: { stringValue: info.content.substring(0, 80) },
+        last_message: { stringValue: (info.content || "").substring(0, 80) },
         last_message_time: { stringValue: timestamp },
         unread_count: { integerValue: unread.toString() },
       },
@@ -1665,6 +1673,31 @@ export default {
 
         try {
           if (eventType === "message_from_bot_subscriber") {
+            // Prevent Bot Loop / Self-reply: Ignore bot messages
+            const isBotSender = 
+              event.sender_type === "bot" || 
+              event.message?.sender_type === "bot" ||
+              event.message?.is_bot === true ||
+              event.sender_employee_info?.is_bot === true ||
+              (event.message?.sender_id && event.message?.sender_id === env.SEATALK_APP_ID);
+
+            if (isBotSender) {
+              await logEvent(env, "info", "Ignored own bot subscriber message to prevent infinite loops", {
+                sender_type: event.sender_type,
+                sender_id: event.message?.sender_id
+              });
+              return new Response(JSON.stringify({ success: true, message: "Ignored own bot message" }), {
+                headers: { "Content-Type": "application/json", ...corsHeaders }
+              });
+            }
+
+            if (!event.employee_code) {
+              await logEvent(env, "info", "Ignored message because employee_code is missing", { event });
+              return new Response(JSON.stringify({ success: true, message: "Ignored message due to missing employee_code" }), {
+                headers: { "Content-Type": "application/json", ...corsHeaders }
+              });
+            }
+
             await logEvent(env, "info", "Processing bot subscriber message", {
               event,
             });
@@ -1756,6 +1789,24 @@ export default {
           } else if (
             eventType === "new_mentioned_message_received_from_group_chat"
           ) {
+            // Prevent Bot Loop / Self-reply: Ignore bot messages
+            const isBotSender = 
+              event.sender_type === "bot" || 
+              event.message?.sender_type === "bot" ||
+              event.message?.is_bot === true ||
+              event.sender_employee_info?.is_bot === true ||
+              (event.message?.sender_id && event.message?.sender_id === env.SEATALK_APP_ID);
+
+            if (isBotSender) {
+              await logEvent(env, "info", "Ignored own group bot message to prevent infinite loops", {
+                sender_type: event.sender_type,
+                sender_id: event.message?.sender_id
+              });
+              return new Response(JSON.stringify({ success: true, message: "Ignored own bot message" }), {
+                headers: { "Content-Type": "application/json", ...corsHeaders }
+              });
+            }
+
             await logEvent(env, "info", "Processing mentioned group message", {
               event,
             });

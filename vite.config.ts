@@ -17,25 +17,6 @@ export default defineConfig(({mode}) => {
     },
     build: {
       rollupOptions: {
-        output: {
-          manualChunks(id) {
-            if (id.includes('node_modules')) {
-              if (id.includes('firebase')) return 'firebase';
-              if (id.includes('recharts')) return 'recharts';
-              if (id.includes('lucide-react')) return 'lucide';
-              if (id.includes('@google/genai')) return 'genai';
-              if (
-                id.includes('react') ||
-                id.includes('react-dom') ||
-                id.includes('scheduler') ||
-                id.includes('use-sync-external-store')
-              ) {
-                return 'react-vendor';
-              }
-              return 'vendor';
-            }
-          }
-        }
       }
     },
     server: {
