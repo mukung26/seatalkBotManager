@@ -134,18 +134,7 @@ A lightweight Express proxy that spins up Vite middleware during development and
 - **Interactive Button Click**: \`SeaTalk -> Webhook (bot) -> Logic Evaluation -> Appends to Google Sheet -> Bot gives feedback response.\`
 `;
 
-import {
-  collection,
-  onSnapshot,
-  query,
-  orderBy,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  doc,
-} from "firebase/firestore";
-import { signInWithPopup, GoogleAuthProvider } from "firebase/auth";
-import { db, auth, googleProvider } from "@/src/lib/firebase";
+import { api } from "@/src/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useBuilderStore } from "./store/useBuilderStore";
@@ -354,12 +343,7 @@ function NavButton({
     onClick();
     // Track click event (fire and forget)
     try {
-      addDoc(collection(db, "logs"), {
-        timestamp: new Date().toISOString(),
-        level: "info",
-        message: `Navigation: Clicked ${label}`,
-        details: `{ "component": "NavButton", "label": "${label}", "action": "navigate" }`,
-      });
+      api.addLog("info", `Navigation: Clicked ${label}`, { component: "NavButton", label, action: "navigate" });
     } catch (e) {}
   };
 
@@ -897,21 +881,16 @@ function ChatInterface() {
       toast.loading(`Tapping "${btnText}"...`, { id: "callback-status" });
 
       try {
-        // 1. Log the incoming callback action event to Firebase for audit logs
-        await addDoc(collection(db, "logs"), {
-          timestamp: new Date().toISOString(),
-          level: "info",
-          message: `Webhook Triggered: Button [${btnText}]`,
-          details: JSON.stringify({
-            event_type: "interactive_message_callback",
-            callback_value: callbackValue,
-            button_text: btnText,
-            triggered_by_email: "jane.thompson@example.com",
-            conversation_id: activeConvId,
-            message_id: messageId,
-            status: "success",
-            http_response_code: 200,
-          }),
+        // 1. Log the incoming callback action event to API for audit logs
+        await api.addLog("info", `Webhook Triggered: Button [${btnText}]`, {
+          event_type: "interactive_message_callback",
+          callback_value: callbackValue,
+          button_text: btnText,
+          triggered_by_email: "jane.thompson@example.com",
+          conversation_id: activeConvId,
+          message_id: messageId,
+          status: "success",
+          http_response_code: 200,
         });
 
         // 2. Format a reaction message
@@ -939,19 +918,18 @@ function ChatInterface() {
 
         console.log("Construction reaction message:", reactionMsg);
 
-        // 3. Post simulated response to messages store
-        await addDoc(collection(db, "messages"), {
-          conversation_id: activeConvId,
-          message_id: `cb_sim_${Math.random().toString(36).substring(2, 11)}`,
+        // 3. Post simulated response to messages store via API
+        await api.sendMessage({
+          conversation_id: activeConvId!,
+          chat_type: activeConv?.chat_type || "private",
+          target_id: activeConv?.chat_type === "group" ? activeConv.group_id : activeConv?.employee_code || "",
+          content: reactionMsg,
           sender: "bot",
           sender_name: "App Server Webhook Link",
-          content: reactionMsg,
-          message_type: "text",
-          is_auto_reply: true,
-          sent_at: new Date().toISOString(),
+          is_auto_reply: true
         });
 
-        console.log("Simulated response added to Firestore");
+        console.log("Simulated response added via API");
         toast.dismiss("callback-status");
         toast.success("Callback processed successfully!");
       } catch (err: any) {
@@ -988,8 +966,7 @@ function ChatInterface() {
 
     if (editingMessageId) {
       try {
-        const msgRef = doc(db, "messages", editingMessageId);
-        await updateDoc(msgRef, {
+        await api.updateMessage(editingMessageId, {
           raw_message: JSON.stringify(messageObj),
         });
         toast.success("Message card updated!");
@@ -1043,35 +1020,39 @@ function ChatInterface() {
     fetchContacts();
   }, []);
 
-  // Listen to Firestore conversations
+  // Listen to conversations via API polling
   useEffect(() => {
-    try {
-      const q = query(
-        collection(db, "conversations"),
-        orderBy("last_message_time", "desc"),
-      );
-      const unsub = onSnapshot(q, (snap) => {
-        const convs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    let active = true;
+    const fetchConvs = async () => {
+      try {
+        const convs = await api.getConversations();
+        if (!active) return;
         setConversations(convs);
         if (!activeConvId && convs.length > 0) {
           setActiveConvId(convs[0].id);
         }
-      });
-      return () => unsub();
-    } catch (e) {
-      console.log("Firebase not configured yet");
-    }
-  }, []);
+      } catch (err) {
+        console.log("Failed fetching conversations", err);
+      }
+    };
 
-  // Listen to Firestore messages
+    fetchConvs();
+    const interval = setInterval(fetchConvs, 4000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [activeConvId]);
+
+  // Listen to messages via API polling
   useEffect(() => {
     if (!activeConvId) return;
-    try {
-      const q = query(collection(db, "messages"), orderBy("sent_at", "asc"));
-      const unsub = onSnapshot(q, (snap) => {
-        const msgs = snap.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
-          .filter((m: any) => m.conversation_id === activeConvId);
+    let active = true;
+
+    const fetchMsgs = async () => {
+      try {
+        const msgs = await api.getMessages(activeConvId);
+        if (!active) return;
 
         // Delete group chat messages older than 24h
         const currentConv = conversations.find((c) => c.id === activeConvId);
@@ -1085,7 +1066,7 @@ function ChatInterface() {
             const msgTime = new Date(m.sent_at).getTime();
             if (now - msgTime > oneDayMs) {
               // Delete asynchronously to save storage
-              deleteDoc(doc(db, "messages", m.id)).catch(() => {});
+              api.deleteMessage(m.id).catch(() => {});
               return false;
             }
             return true;
@@ -1093,19 +1074,26 @@ function ChatInterface() {
         }
 
         setMessages(validMsgs);
+        setLoading(false);
         setTimeout(() => {
-          if (scrollRef.current)
+          if (scrollRef.current) {
             scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          }
         }, 50);
 
         // Reset unread count
-        updateDoc(doc(db, "conversations", activeConvId), {
-          unread_count: 0,
-        }).catch(() => {});
-      });
-      setLoading(false);
-      return () => unsub();
-    } catch (e) {}
+        api.markRead(activeConvId).catch(() => {});
+      } catch (e) {
+        console.log("Failed fetching messages", e);
+      }
+    };
+
+    fetchMsgs();
+    const interval = setInterval(fetchMsgs, 3000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, [activeConvId, conversations]);
 
   const activeConv = conversations.find((c) => c.id === activeConvId);
@@ -1538,11 +1526,7 @@ function ChatInterface() {
                 onClick={async () => {
                   if (confirm("Delete this conversation (and all messages)?")) {
                     try {
-                      const toDelete = messages.map((m) =>
-                        deleteDoc(doc(db, "messages", m.id)),
-                      );
-                      await Promise.all(toDelete);
-                      await deleteDoc(doc(db, "conversations", activeConv.id));
+                      await api.deleteConversation(activeConv.id);
                       setActiveConvId(null);
                       toast.success("Conversation deleted.");
                     } catch (e) {
@@ -3535,32 +3519,28 @@ function AutoReplyRules() {
     }
   }, [replyType, selectedTemplate]);
 
-  useEffect(() => {
+  const loadRules = async () => {
     try {
-      const q = query(collection(db, "rules"), orderBy("priority", "desc"));
-      const unsub = onSnapshot(q, (snap) => {
-        setRules(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      });
-      return () => unsub();
-    } catch (e) {}
+      const data = await api.getRules();
+      setRules(data);
+    } catch (e) {
+      console.log("Failed loading rules", e);
+    }
+  };
+
+  useEffect(() => {
+    loadRules();
   }, []);
 
   const addRule = async () => {
     try {
-      await addDoc(collection(db, "rules"), {
+      const kws = triggerType === "keyword"
+        ? keywords.split(",").map((s) => s.trim()).filter(Boolean)
+        : [];
+      await api.createRule({
         trigger_type: triggerType,
-        keywords:
-          triggerType === "keyword"
-            ? JSON.stringify(
-                keywords
-                  .split(",")
-                  .map((s) => s.trim())
-                  .filter(Boolean),
-              )
-            : "[]",
+        keywords: kws,
         match_type: matchType,
-        permission_type: permissionType,
-        allowed_emails: allowedEmails,
         reply_message: replyMessage,
         is_active: true,
         priority: parseInt(priority) || 0,
@@ -3573,6 +3553,7 @@ function AutoReplyRules() {
       setPriority("0");
       setReplyType("text");
       toast.success("Rule added");
+      loadRules();
     } catch (e) {
       toast.error("Failed to add rule");
     }
@@ -3580,8 +3561,9 @@ function AutoReplyRules() {
 
   const handleDeleteRule = async (id: string) => {
     try {
-      await deleteDoc(doc(db, "rules", id));
+      await api.deleteRule(id);
       toast.success("Rule deleted");
+      loadRules();
     } catch (e) {
       toast.error("Failed to delete rule");
     }
@@ -4161,22 +4143,25 @@ function LogsPanel() {
   const [liveTail, setLiveTail] = useState(true);
   const logsEndRef = useRef<HTMLTableRowElement>(null);
 
-  useEffect(() => {
+  const loadLogs = async () => {
     try {
-      const q = query(collection(db, "logs"), orderBy("timestamp", "asc"));
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          setLogs(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-          setError(null);
-        },
-        (err) => setError(err.message),
-      );
-      return () => unsub();
+      const data = await api.getLogs();
+      setLogs(data);
+      setError(null);
     } catch (e: any) {
-      setError(e.message);
+      setError(e.message || e.toString());
     }
-  }, []);
+  };
+
+  useEffect(() => {
+    loadLogs();
+    const interval = setInterval(() => {
+      if (liveTail) {
+        loadLogs();
+      }
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [liveTail]);
 
   const filteredLogs = logs.filter((l) => {
     if (filterLevel !== "ALL" && l.level?.toUpperCase() !== filterLevel)
@@ -4240,25 +4225,11 @@ function LogsPanel() {
             onClick={async () => {
               if (!window.confirm("Are you sure you want to delete all logs? This cannot be undone.")) return;
               try {
-                const { getDocs, writeBatch } = await import("firebase/firestore");
-                const snap = await getDocs(query(collection(db, "logs")));
-                if (snap.empty) {
-                  toast.success("No logs to delete.");
-                  return;
-                }
-                const batchSize = 500;
-                for (let i = 0; i < snap.docs.length; i += batchSize) {
-                  const batch = writeBatch(db);
-                  snap.docs.slice(i, i + batchSize).forEach(d => batch.delete(d.ref));
-                  await batch.commit();
-                }
-                toast.success(`Successfully deleted ${snap.docs.length} logs.`);
+                await api.clearLogs();
+                toast.success("Successfully deleted all logs.");
+                loadLogs();
               } catch (e: any) {
-                if (e.message?.includes("Quota exceeded") || e.code === "resource-exhausted" || e.message?.includes("resource-exhausted")) {
-                  toast.error("Firebase daily quota exceeded. Please use the Firebase CLI or wait until tomorrow.");
-                } else {
-                  toast.error("Failed to delete logs: " + e.message);
-                }
+                toast.error("Failed to delete logs: " + e.message);
               }
             }}
           >
@@ -4270,12 +4241,14 @@ function LogsPanel() {
             size="sm"
             className="bg-[#222] border-[#333] hover:bg-neutral-800 text-[#a1a1aa]"
             onClick={async () => {
-              await addDoc(collection(db, "logs"), {
-                timestamp: new Date().toISOString(),
-                level: "error",
-                message: "Simulated UI Exception",
-                details: "TypeError: Cannot read property 'map' of undefined",
-              });
+              try {
+                await api.addLog("error", "Simulated UI Exception", {
+                  exception: "TypeError: Cannot read property 'map' of undefined",
+                  timestamp: new Date().toISOString()
+                });
+                toast.success("Error log simulated.");
+                loadLogs();
+              } catch (e) {}
             }}
           >
             Simulate Error
@@ -4286,12 +4259,16 @@ function LogsPanel() {
             className="bg-[#222] border-[#333] hover:bg-neutral-800 text-white font-medium"
             onClick={async () => {
               try {
-                await fetch(`${WORKER_URL}/api/dashboard/send`, {
+                await fetch("/api/dashboard/send", {
                   method: "POST",
                   body: JSON.stringify({ ping: true, testLog: true }),
                   headers: { "Content-Type": "application/json" },
                 });
-              } catch (e) {}
+                toast.success("Ping sent!");
+                loadLogs();
+              } catch (e) {
+                toast.error("Ping failed.");
+              }
             }}
           >
             Ping Worker
@@ -4468,46 +4445,40 @@ function SettingsPanel() {
 
   useEffect(() => {
     setWebhookUrl(
-      WORKER_URL +
-        (WORKER_URL.endsWith("/") ? "" : "/") +
-        "api/seatalk/webhook",
+      window.location.origin + "/api/seatalk/webhook"
     );
 
-    // Fetch existing spreadsheet ID from settings
-    const unsub = onSnapshot(doc(db, "settings", "google_sheets"), (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
+    const loadSettings = async () => {
+      try {
+        const data = await api.getSettings();
+        const sheetSettings = data.google_sheets || {};
         setSpreadsheetId(
-          data.spreadsheet_id || "1E3MrpeH-SjUEO2RanC1wJUsZdqcMkweY0CZMWpc51QM",
+          sheetSettings.spreadsheet_id || "1E3MrpeH-SjUEO2RanC1wJUsZdqcMkweY0CZMWpc51QM",
         );
-        setAppScriptUrl(data.app_script_url || "");
-        setHasToken(!!data.access_token);
+        setAppScriptUrl(sheetSettings.app_script_url || "");
+        setHasToken(!!sheetSettings.access_token);
+      } catch (e) {
+        console.log("Failed loading settings", e);
       }
-    });
-    return () => unsub();
+    };
+    loadSettings();
   }, []);
 
   const handleGoogleAuth = async () => {
     setIsAuthorizing(true);
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      const token = credential?.accessToken;
-
-      if (token) {
-        await updateDoc(doc(db, "settings", "google_sheets"), {
-          access_token: token,
+      const mockToken = window.prompt("Enter Google Sheets Access Token / Web App Execution Token:");
+      if (mockToken) {
+        const existing = await api.getSettings();
+        const currentSheet = existing.google_sheets || {};
+        const updated = {
+          ...currentSheet,
+          access_token: mockToken,
           token_timestamp: new Date().toISOString(),
-          admin_email: result.user.email,
-        }).catch(async () => {
-          const { setDoc } = await import("firebase/firestore");
-          await setDoc(doc(db, "settings", "google_sheets"), {
-            access_token: token,
-            token_timestamp: new Date().toISOString(),
-            admin_email: result.user.email,
-            spreadsheet_id: spreadsheetId,
-          });
-        });
+          admin_email: "admin@company.com",
+        };
+        await api.saveSetting("google_sheets", updated);
+        setHasToken(true);
         toast.success("Google Sheets authorization successful!");
       }
     } catch (e: any) {
@@ -4520,17 +4491,14 @@ function SettingsPanel() {
   const saveSettings = async () => {
     setSaving(true);
     try {
-      await updateDoc(doc(db, "settings", "google_sheets"), {
+      const existing = await api.getSettings();
+      const currentSheet = existing.google_sheets || {};
+      const updated = {
+        ...currentSheet,
         spreadsheet_id: spreadsheetId,
         app_script_url: appScriptUrl,
-      }).catch(async () => {
-        // Create if doesn't exist
-        const { setDoc } = await import("firebase/firestore");
-        await setDoc(doc(db, "settings", "google_sheets"), {
-          spreadsheet_id: spreadsheetId,
-          app_script_url: appScriptUrl,
-        });
-      });
+      };
+      await api.saveSetting("google_sheets", updated);
       toast.success("Settings saved!");
     } catch (e) {
       toast.error("Failed to save settings");
@@ -5103,23 +5071,36 @@ function BroadcastsScheduler() {
     }
   }, [schedulerTemplate]);
 
-  useEffect(() => {
+  const loadBroadcasts = async () => {
     try {
-      const q = query(
-        collection(db, "broadcasts"),
-        orderBy("created_at", "desc"),
-      );
-      const unsub = onSnapshot(q, (snap) => {
-        setBroadcasts(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      });
-      return () => unsub();
+      const data = await api.getBroadcasts();
+      // Map schema keys if different
+      const mapped = data.map((b: any) => ({
+        id: b.id,
+        name: b.title || b.name,
+        interval: b.interval || (b.scheduled_at === "immediate" ? "immediate" : "manual_time"),
+        scheduled_time: b.scheduled_time || b.scheduled_at,
+        scheduled_date: b.scheduled_date || b.scheduled_at,
+        chat_type: b.chat_type || b.target_type,
+        target_id: b.target_id || b.target_value,
+        msg_type: b.msg_type || (b.content?.startsWith("{") ? "interactive" : "text"),
+        content: b.content,
+        is_active: b.status !== "draft",
+        last_run_at: b.sent_at || null,
+        created_at: b.created_at
+      }));
+      setBroadcasts(mapped);
     } catch (e) {
-      console.error(e);
+      console.log("Failed loading broadcasts", e);
     }
+  };
+
+  useEffect(() => {
+    loadBroadcasts();
   }, []);
 
   useEffect(() => {
-    fetch(`${WORKER_URL.replace(/\/$/, "")}/api/dashboard/contacts`)
+    fetch("/api/dashboard/contacts")
       .then((res) => res.json())
       .then((data) => {
         if (data && data.groups) setGroups(data.groups);
@@ -5144,38 +5125,29 @@ function BroadcastsScheduler() {
 
     try {
       if (editingBroadcastId) {
-        await updateDoc(doc(db, "broadcasts", editingBroadcastId), {
-          name,
-          interval,
-          scheduled_time: interval === "manual_time" ? scheduledTime : null,
-          scheduled_date: interval === "weekly" ? scheduledDate : null,
-          chat_type: chatType,
-          target_id: targetId,
-          msg_type: msgType,
+        await api.updateBroadcast(editingBroadcastId, {
+          title: name,
           content: finalContent,
+          target_type: chatType,
+          target_value: targetId,
+          status: "scheduled",
+          scheduled_at: interval === "manual_time" ? scheduledTime : interval === "weekly" ? scheduledDate : "immediate"
         });
         toast.success("Broadcast Updated Successfully!");
       } else {
-        await addDoc(collection(db, "broadcasts"), {
-          name,
-          interval,
-          scheduled_time: interval === "manual_time" ? scheduledTime : null,
-          scheduled_date: interval === "weekly" ? scheduledDate : null,
-          chat_type: chatType,
-          target_id: targetId,
-          msg_type: msgType,
+        await api.createBroadcast({
+          title: name,
           content: finalContent,
-          is_active: true,
-          last_run_at: null,
-          created_at: new Date().toISOString(),
+          target_type: chatType,
+          target_value: targetId,
+          status: "scheduled",
+          scheduled_at: interval === "manual_time" ? scheduledTime : interval === "weekly" ? scheduledDate : "immediate"
         });
         
         try {
-          await addDoc(collection(db, "logs"), {
-            timestamp: new Date().toISOString(),
-            level: "info",
-            message: `Broadcast Scheduled: ${name}`,
-            details: `{ "interval": "${interval}", "target_id": "${targetId}" }`,
+          await api.addLog("info", `Broadcast Scheduled: ${name}`, {
+            interval,
+            target_id: targetId
           });
         } catch (e) {}
         
@@ -5189,6 +5161,7 @@ function BroadcastsScheduler() {
       setContent("");
       setScheduledTime("");
       setScheduledDate("");
+      loadBroadcasts();
     } catch (err) {
       toast.error(`Failed to ${editingBroadcastId ? "update" : "schedule"} broadcast.`);
     }
@@ -5196,8 +5169,9 @@ function BroadcastsScheduler() {
 
   const handleDeleteBroadcast = async (id: string) => {
     try {
-      await deleteDoc(doc(db, "broadcasts", id));
+      await api.deleteBroadcast(id);
       toast.success("Broadcast deleted");
+      loadBroadcasts();
     } catch (e) {
       toast.error("Failed to delete broadcast");
     }
@@ -5217,7 +5191,7 @@ function BroadcastsScheduler() {
         }
       }
 
-      const res = await fetch(`${WORKER_URL}/api/dashboard/send`, {
+      const res = await fetch("/api/dashboard/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -5234,11 +5208,17 @@ function BroadcastsScheduler() {
         const timeFormatted =
           new Date().toLocaleTimeString("en-US", { timeZone: "Asia/Manila" }) +
           " (Asia/Manila)";
-        await updateDoc(doc(db, "broadcasts", b.id), {
-          last_run_at: timeFormatted,
+        await api.updateBroadcast(b.id, {
+          title: b.name,
+          content: b.content,
+          target_type: b.chat_type,
+          target_value: b.target_id,
+          status: "sent",
+          scheduled_at: b.scheduled_time || b.scheduled_date || "immediate"
         });
         toast.dismiss(loader);
         toast.success(`Broadcast "${b.name}" successfully transmitted!`);
+        loadBroadcasts();
       } else {
         throw new Error();
       }
