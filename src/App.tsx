@@ -4254,7 +4254,11 @@ function LogsPanel() {
                 }
                 toast.success(`Successfully deleted ${snap.docs.length} logs.`);
               } catch (e: any) {
-                toast.error("Failed to delete logs: " + e.message);
+                if (e.message?.includes("Quota exceeded") || e.code === "resource-exhausted" || e.message?.includes("resource-exhausted")) {
+                  toast.error("Firebase daily quota exceeded. Please use the Firebase CLI or wait until tomorrow.");
+                } else {
+                  toast.error("Failed to delete logs: " + e.message);
+                }
               }
             }}
           >
