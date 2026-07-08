@@ -134,7 +134,7 @@ A lightweight Express proxy that spins up Vite middleware during development and
 - **Interactive Button Click**: \`SeaTalk -> Webhook (bot) -> Logic Evaluation -> Appends to Google Sheet -> Bot gives feedback response.\`
 `;
 
-import { api } from "@/src/lib/api";
+import { api, getApiUrl } from "@/src/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useBuilderStore } from "./store/useBuilderStore";
@@ -4259,7 +4259,7 @@ function LogsPanel() {
             className="bg-[#222] border-[#333] hover:bg-neutral-800 text-white font-medium"
             onClick={async () => {
               try {
-                await fetch("/api/dashboard/send", {
+                await fetch(getApiUrl("/api/dashboard/send"), {
                   method: "POST",
                   body: JSON.stringify({ ping: true, testLog: true }),
                   headers: { "Content-Type": "application/json" },
@@ -4445,7 +4445,7 @@ function SettingsPanel() {
 
   useEffect(() => {
     setWebhookUrl(
-      window.location.origin + "/api/seatalk/webhook"
+      getApiUrl("/api/seatalk/webhook")
     );
 
     const loadSettings = async () => {
@@ -5100,7 +5100,7 @@ function BroadcastsScheduler() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/dashboard/contacts")
+    fetch(getApiUrl("/api/dashboard/contacts"))
       .then((res) => res.json())
       .then((data) => {
         if (data && data.groups) setGroups(data.groups);
@@ -5191,7 +5191,7 @@ function BroadcastsScheduler() {
         }
       }
 
-      const res = await fetch("/api/dashboard/send", {
+      const res = await fetch(getApiUrl("/api/dashboard/send"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

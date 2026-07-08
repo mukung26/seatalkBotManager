@@ -16,75 +16,13 @@ const SEATALK_API = "https://openapi.seatalk.io";
 // Create tables automatically if they don't exist
 async function ensureD1Tables(db) {
   if (!db) return;
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS conversations (
-      id TEXT PRIMARY KEY,
-      chat_type TEXT,
-      employee_code TEXT,
-      group_id TEXT,
-      group_name TEXT,
-      user_name TEXT,
-      user_email TEXT,
-      last_message TEXT,
-      last_message_time TEXT,
-      unread_count INTEGER DEFAULT 0,
-      status TEXT DEFAULT 'active'
-    );
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT,
-      message_id TEXT,
-      sender TEXT,
-      sender_name TEXT,
-      content TEXT,
-      tag TEXT,
-      employee_code TEXT,
-      group_id TEXT,
-      is_auto_reply INTEGER DEFAULT 0,
-      sent_at TEXT,
-      thread_id TEXT,
-      quoted_message_id TEXT,
-      raw_message TEXT
-    );
-    CREATE TABLE IF NOT EXISTS rules (
-      id TEXT PRIMARY KEY,
-      trigger_type TEXT,
-      keywords TEXT,
-      match_type TEXT,
-      reply_message TEXT,
-      is_active INTEGER DEFAULT 1,
-      priority INTEGER DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS logs (
-      id TEXT PRIMARY KEY,
-      timestamp TEXT,
-      level TEXT,
-      message TEXT,
-      details TEXT
-    );
-    CREATE TABLE IF NOT EXISTS broadcasts (
-      id TEXT PRIMARY KEY,
-      title TEXT,
-      content TEXT,
-      target_type TEXT,
-      target_value TEXT,
-      status TEXT DEFAULT 'pending',
-      scheduled_at TEXT,
-      sent_at TEXT,
-      created_at TEXT
-    );
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT
-    );
-    CREATE TABLE IF NOT EXISTS message_actions (
-      id TEXT PRIMARY KEY,
-      message_id TEXT,
-      employee_code TEXT,
-      callback_value TEXT,
-      timestamp TEXT
-    );
-  `);
+  await db.exec("CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, chat_type TEXT, employee_code TEXT, group_id TEXT, group_name TEXT, user_name TEXT, user_email TEXT, last_message TEXT, last_message_time TEXT, unread_count INTEGER DEFAULT 0, status TEXT DEFAULT 'active');");
+  await db.exec("CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, conversation_id TEXT, message_id TEXT, sender TEXT, sender_name TEXT, content TEXT, tag TEXT, employee_code TEXT, group_id TEXT, is_auto_reply INTEGER DEFAULT 0, sent_at TEXT, thread_id TEXT, quoted_message_id TEXT, raw_message TEXT);");
+  await db.exec("CREATE TABLE IF NOT EXISTS rules (id TEXT PRIMARY KEY, trigger_type TEXT, keywords TEXT, match_type TEXT, reply_message TEXT, is_active INTEGER DEFAULT 1, priority INTEGER DEFAULT 0);");
+  await db.exec("CREATE TABLE IF NOT EXISTS logs (id TEXT PRIMARY KEY, timestamp TEXT, level TEXT, message TEXT, details TEXT);");
+  await db.exec("CREATE TABLE IF NOT EXISTS broadcasts (id TEXT PRIMARY KEY, title TEXT, content TEXT, target_type TEXT, target_value TEXT, status TEXT DEFAULT 'pending', scheduled_at TEXT, sent_at TEXT, created_at TEXT);");
+  await db.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);");
+  await db.exec("CREATE TABLE IF NOT EXISTS message_actions (id TEXT PRIMARY KEY, message_id TEXT, employee_code TEXT, callback_value TEXT, timestamp TEXT);");
 }
 
 async function logEvent(env, level, message, details = {}) {
@@ -436,7 +374,7 @@ export default {
   async fetch(request, env) {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
     };
 

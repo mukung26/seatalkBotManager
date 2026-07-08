@@ -1,11 +1,11 @@
 // Client REST API client for SeaTalk Bot Dashboard D1 database.
 // This replaces direct Firebase Firestore SDK interactions.
 
+export const WORKER_URL = "https://testbotworker.jcruspero3263.workers.dev";
+
 // Determine the API base URL based on the environment
 export const getApiUrl = (path: string): string => {
-  // In development/Vite environment, we call relative paths served by our dev proxy.
-  // In production, we do the same or call the deployed Cloudflare worker.
-  return `${path}`;
+  return `${WORKER_URL.replace(/\/$/, "")}${path}`;
 };
 
 export const api = {
