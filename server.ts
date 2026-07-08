@@ -201,7 +201,7 @@ function processMessageMentions(messageObj: any) {
 async function sendPrivateMessage(employeeCode: string, text: string, messageObj?: any) {
   const token = await getAccessToken();
   if (!token) return;
-  const messageData = messageObj ? messageObj : processMessageMentions({ tag: 'text', text: { format: 1, content: text } });
+  const messageData = messageObj ? messageObj : processMessageMentions({ tag: 'text', text: { content: text } });
   await fetch(`${SEATALK_API}/messaging/v2/single_chat`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -212,7 +212,7 @@ async function sendPrivateMessage(employeeCode: string, text: string, messageObj
 async function sendGroupMessage(groupId: string, text: string, threadId?: string, messageObj?: any) {
   const token = await getAccessToken();
   if (!token) return;
-  const messageData = messageObj ? messageObj : processMessageMentions({ tag: 'text', text: { format: 1, content: text } });
+  const messageData = messageObj ? messageObj : processMessageMentions({ tag: 'text', text: { content: text } });
   const body: any = { group_id: groupId, message: messageData };
   if (threadId) body.thread_id = threadId;
   await fetch(`${SEATALK_API}/messaging/v2/group_chat`, {

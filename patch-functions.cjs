@@ -91,7 +91,7 @@ async function getEmployeeProfile(env, employeeCode) {
 
 async function sendPrivateMessage(env, employeeCode, text, messageObj, threadId) {
   const token = await getAccessToken(env);
-  const messageData = messageObj ? messageObj : { tag: "text", text: { format: 1, content: text } };
+  const messageData = messageObj ? JSON.parse(JSON.stringify(messageObj)) : { tag: "text", text: { content: text } };
   if (threadId) {
     messageData.thread_id = threadId;
     messageData.quoted_message_id = threadId; 
@@ -107,7 +107,7 @@ async function sendPrivateMessage(env, employeeCode, text, messageObj, threadId)
 
 async function sendGroupMessage(env, groupId, text, threadId, messageObj) {
   const token = await getAccessToken(env);
-  const messageData = messageObj ? messageObj : { tag: "text", text: { format: 1, content: text } };
+  const messageData = messageObj ? JSON.parse(JSON.stringify(messageObj)) : { tag: "text", text: { content: text } };
   if (threadId) {
     messageData.thread_id = threadId;
     messageData.quoted_message_id = threadId; 

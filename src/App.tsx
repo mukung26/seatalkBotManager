@@ -152,7 +152,6 @@ const getInitialTab = () => {
   if (path === "/scheduler") return "broadcasts";
   if (path === "/playground") return "playground";
   if (path === "/developer-api") return "bot_tools";
-  if (path === "/logs") return "logs";
   if (path === "/settings") return "settings";
   return "chat";
 };
@@ -193,7 +192,6 @@ export default function App() {
     else if (tab === "broadcasts") path = "/scheduler";
     else if (tab === "playground") path = "/playground";
     else if (tab === "bot_tools") path = "/developer-api";
-    else if (tab === "logs") path = "/logs";
     else if (tab === "settings") path = "/settings";
     
     if (window.location.pathname !== path) {
@@ -219,9 +217,6 @@ export default function App() {
         </LazyTab>
         <LazyTab active={activeTab === "bot_tools"}>
           <BotToolsPanel />
-        </LazyTab>
-        <LazyTab active={activeTab === "logs"}>
-          <LogsPanel />
         </LazyTab>
         <LazyTab active={activeTab === "settings"}>
           <SettingsPanel />
@@ -309,12 +304,6 @@ function Sidebar({
           label="SeaTalk Developer API"
           active={activeTab === "bot_tools"}
           onClick={() => setActiveTab("bot_tools")}
-        />
-        <NavButton
-          icon={<CheckCircle2 size={20} />}
-          label="Logs"
-          active={activeTab === "logs"}
-          onClick={() => setActiveTab("logs")}
         />
         <NavButton
           icon={<Settings size={20} />}
@@ -4135,301 +4124,7 @@ function AutoReplyRules() {
   );
 }
 
-function LogsPanel() {
-  const [logs, setLogs] = useState<any[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [filterLevel, setFilterLevel] = useState("ALL");
-  const [search, setSearch] = useState("");
-  const [liveTail, setLiveTail] = useState(true);
-  const logsEndRef = useRef<HTMLTableRowElement>(null);
 
-  const loadLogs = async () => {
-    try {
-      const data = await api.getLogs();
-      setLogs(data);
-      setError(null);
-    } catch (e: any) {
-      setError(e.message || e.toString());
-    }
-  };
-
-  useEffect(() => {
-    loadLogs();
-    const interval = setInterval(() => {
-      if (liveTail) {
-        loadLogs();
-      }
-    }, 4000);
-    return () => clearInterval(interval);
-  }, [liveTail]);
-
-  const filteredLogs = logs.filter((l) => {
-    if (filterLevel !== "ALL" && l.level?.toUpperCase() !== filterLevel)
-      return false;
-    if (search) {
-      const s = search.toLowerCase();
-      return (
-        (l.message || "").toLowerCase().includes(s) ||
-        (l.details || "").toLowerCase().includes(s)
-      );
-    }
-    return true;
-  });
-
-  const chartData = useMemo(() => {
-    const buckets: Record<
-      string,
-      { time: string; error: number; info: number; warning: number }
-    > = {};
-    logs.forEach((l) => {
-      const d = new Date(l.timestamp);
-      if (isNaN(d.getTime())) return;
-
-      const key = `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
-      if (!buckets[key])
-        buckets[key] = { time: key, error: 0, info: 0, warning: 0 };
-
-      const lvl = l.level?.toLowerCase() || "info";
-      if (lvl === "error" || lvl === "warning" || lvl === "info") {
-        buckets[key][lvl]++;
-      } else {
-        buckets[key].info++;
-      }
-    });
-
-    return Object.values(buckets)
-      .sort((a, b) => a.time.localeCompare(b.time))
-      .slice(-30);
-  }, [logs]);
-
-  useEffect(() => {
-    if (liveTail && logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [filteredLogs, liveTail]);
-
-  return (
-    <div className="flex flex-col h-full bg-black text-[#a1a1aa] font-mono text-sm overflow-hidden">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-[#222] bg-[#111] shrink-0">
-        <div className="flex items-center gap-4">
-          <Terminal size={20} className="text-[#a1a1aa] hover:text-white" />
-          <h1 className="text-lg font-semibold text-[#ededed] tracking-tight font-sans">
-            Developer Logs
-          </h1>
-        </div>
-        <div className="flex items-center gap-3">
-          <Button
-            variant="outline"
-            size="sm"
-            className="bg-red-950/30 border-red-900/50 hover:bg-red-900/50 text-red-400 font-medium"
-            onClick={async () => {
-              if (!window.confirm("Are you sure you want to delete all logs? This cannot be undone.")) return;
-              try {
-                await api.clearLogs();
-                toast.success("Successfully deleted all logs.");
-                loadLogs();
-              } catch (e: any) {
-                toast.error("Failed to delete logs: " + e.message);
-              }
-            }}
-          >
-            <Trash2 size={16} className="mr-2" />
-            Clear All Logs
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="bg-[#222] border-[#333] hover:bg-neutral-800 text-[#a1a1aa]"
-            onClick={async () => {
-              try {
-                await api.addLog("error", "Simulated UI Exception", {
-                  exception: "TypeError: Cannot read property 'map' of undefined",
-                  timestamp: new Date().toISOString()
-                });
-                toast.success("Error log simulated.");
-                loadLogs();
-              } catch (e) {}
-            }}
-          >
-            Simulate Error
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="bg-[#222] border-[#333] hover:bg-neutral-800 text-white font-medium"
-            onClick={async () => {
-              try {
-                await fetch(getApiUrl("/api/dashboard/send"), {
-                  method: "POST",
-                  body: JSON.stringify({ ping: true, testLog: true }),
-                  headers: { "Content-Type": "application/json" },
-                });
-                toast.success("Ping sent!");
-                loadLogs();
-              } catch (e) {
-                toast.error("Ping failed.");
-              }
-            }}
-          >
-            Ping Worker
-          </Button>
-        </div>
-      </div>
-
-      <div className="flex flex-col md:flex-row border-b border-[#222] bg-[#111] shrink-0">
-        <div className="flex-1 p-4 flex flex-col gap-4 border-r border-[#222]">
-          <div className="flex items-center gap-3 border border-[#222] rounded-md p-1 bg-[#222]">
-            <div className="relative flex-1">
-              <Search
-                size={14}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-[#666666]"
-              />
-              <input
-                className="w-full h-8 pl-9 bg-transparent border-none outline-none text-[#ededed] placeholder:text-[#888888] text-sm font-sans"
-                placeholder="Search logs, payloads, or endpoints..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-            <div className="h-6 w-px bg-neutral-800 hidden md:block"></div>
-            <Select value={filterLevel} onValueChange={setFilterLevel}>
-              <SelectTrigger className="w-[120px] h-8 bg-transparent border-none text-[#ededed] shadow-sm focus:ring-0">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-[#222] border-[#333] text-[#ededed]">
-                <SelectItem value="ALL">All Levels</SelectItem>
-                <SelectItem value="INFO">Info</SelectItem>
-                <SelectItem value="WARNING">Warning</SelectItem>
-                <SelectItem value="ERROR">Error</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex items-center justify-between text-xs text-[#666666] uppercase tracking-widest mt-auto font-sans">
-            <span>Showing {filteredLogs.length} events</span>
-            <label className="flex items-center gap-2 cursor-pointer hover:text-[#ededed] transition-colors">
-              <input
-                type="checkbox"
-                checked={liveTail}
-                onChange={(e) => setLiveTail(e.target.checked)}
-                className="rounded border-[#333] bg-neutral-800 text-white focus:ring-white focus:ring-offset-neutral-900"
-              />
-              Live Tail
-            </label>
-          </div>
-        </div>
-
-        <div className="w-full md:w-1/2 lg:w-2/3 h-32 p-4 hidden md:flex flex-col border-b md:border-b-0 border-[#222]">
-          <div className="text-[10px] text-[#666666] uppercase tracking-widest font-sans mb-1">
-            Event Volume
-          </div>
-          <div className="flex-1 min-h-0">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={chartData}
-                margin={{ top: 0, right: 0, left: 0, bottom: 0 }}
-              >
-                <Bar
-                  dataKey="info"
-                  stackId="a"
-                  fill="#3b82f6"
-                  radius={[0, 0, 0, 0]}
-                />
-                <Bar
-                  dataKey="warning"
-                  stackId="a"
-                  fill="#f59e0b"
-                  radius={[0, 0, 0, 0]}
-                />
-                <Bar
-                  dataKey="error"
-                  stackId="a"
-                  fill="#ef4444"
-                  radius={[2, 2, 0, 0]}
-                />
-                <RechartsTooltip
-                  contentStyle={{
-                    backgroundColor: "#1a1a1a",
-                    border: "1px solid #333",
-                    borderRadius: "6px",
-                    fontSize: "12px",
-                  }}
-                  itemStyle={{ color: "#fff" }}
-                  cursor={{ fill: "#ffffff10" }}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto w-full relative">
-        {error && (
-          <div className="m-4 p-4 text-sm text-red-400 bg-red-950/30 rounded border border-red-900/50">
-            <strong>Stream Error:</strong> {error}
-          </div>
-        )}
-        <table className="w-full text-left border-collapse">
-          <thead className="sticky top-0 bg-black text-[#888] text-xs uppercase tracking-wider z-10 border-b border-[#222] font-sans shadow-sm">
-            <tr>
-              <th className="px-6 py-3 font-medium w-48">Timestamp</th>
-              <th className="px-4 py-3 font-medium w-28">Level</th>
-              <th className="px-4 py-3 font-medium">Message & Details</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-neutral-800/60">
-            {filteredLogs.map((l) => (
-              <tr
-                key={l.id}
-                className="hover:bg-[#121212] transition-colors group"
-              >
-                <td className="px-6 py-3 text-[#666666] whitespace-nowrap align-top text-xs">
-                  {new Date(l.timestamp).toLocaleString()}
-                </td>
-                <td className="px-4 py-3 align-top">
-                  <span
-                    className={cn(
-                      "text-[10px] px-2 py-0.5 rounded font-bold tracking-wider uppercase font-sans",
-                      l.level?.toLowerCase() === "error"
-                        ? "bg-red-500/10 text-red-400 border border-red-500/20"
-                        : l.level?.toLowerCase() === "warning"
-                          ? "bg-blackmber-500/10 text-amber-500 border border-amber-500/20"
-                          : "bg-blue-500/10 text-white border border-blue-500/20",
-                    )}
-                  >
-                    {l.level || "INFO"}
-                  </span>
-                </td>
-                <td className="px-4 py-3 align-top text-[#a1a1aa]">
-                  <div className="font-semibold text-[#ececec] mb-1">
-                    {l.message}
-                  </div>
-                  {l.details && l.details !== "{}" && (
-                    <pre className="text-[11px] font-mono text-[#666666] bg-[#161616] p-2.5 rounded border border-[#222]/80 overflow-x-auto max-w-full lg:max-w-4xl whitespace-pre-wrap leading-relaxed mt-2">
-                      {l.details}
-                    </pre>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {filteredLogs.length === 0 && (
-              <tr>
-                <td
-                  colSpan={3}
-                  className="px-6 py-12 text-center text-[#888888] font-sans"
-                >
-                  No events captured matching this filter.
-                </td>
-              </tr>
-            )}
-            <tr ref={logsEndRef} className="h-0 opacity-0">
-              <td colSpan={3}></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
 
 function SettingsPanel() {
   const [webhookUrl, setWebhookUrl] = useState("");
