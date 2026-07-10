@@ -198,6 +198,33 @@ function processMessageMentions(messageObj: any) {
   return messageData;
 }
 
+
+async function resolveEmployeeCode(targetId: string) {
+  if (!targetId.includes("@")) {
+    return targetId;
+  }
+  const token = await getAccessToken();
+  const res = await fetch(`${SEATALK_API}/contacts/v2/get_employee_code_with_email`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ emails: [targetId] })
+  });
+  if (res.ok) {
+    const data = await res.json() as any;
+    if (data.code === 0 && data.employees && data.employees.length > 0) {
+      const emp = data.employees.find((e: any) => e.code === 0 && e.employee_status === 2) || 
+                  data.employees.find((e: any) => e.code === 0 && e.employee_code);
+      if (emp && emp.employee_code) {
+        return emp.employee_code;
+      }
+    }
+  }
+  return targetId;
+}
+
 async function sendPrivateMessage(employeeCode: string, text: string, messageObj?: any) {
   const token = await getAccessToken();
   if (!token) return;
@@ -626,8 +653,10 @@ app.post('/api/dashboard/send', async (req, res) => {
   }
 
   try {
+    let actualEmployeeCode = target_id;
     if (chat_type === "private") {
-      await sendPrivateMessage(target_id, content, message_obj);
+      actualEmployeeCode = await resolveEmployeeCode(target_id);
+      await sendPrivateMessage(actualEmployeeCode, content, message_obj);
     } else if (chat_type === "group") {
       await sendGroupMessage(target_id, content, thread_id, message_obj);
     }
@@ -664,6 +693,111 @@ app.post('/api/messages/send', async (req, res) => {
   saveMessage(conv.id, { sender: 'admin', sender_name: 'Admin', content, employee_code: conv.employee_code, group_id: conv.group_id, is_auto_reply: false });
   res.json({ success: true });
 });
+
+async function runScheduledBroadcastsLocal() {
+  try {
+    const results = db.prepare(
+      "SELECT * FROM broadcasts WHERE status = 'pending' OR status = 'scheduled'"
+    ).all() as any[];
+    
+    if (results.length === 0) return;
+
+    const now = new Date();
+    // Use UTC+8 for Manila/Singapore standard time
+    const offset = 8 * 60 * 60 * 1000;
+    const localNow = new Date(now.getTime() + offset);
+    const dayOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][localNow.getUTCDay()];
+    const currentHourStr = localNow.getUTCHours().toString().padStart(2, "0");
+    const currentMinStr = localNow.getUTCMinutes().toString().padStart(2, "0");
+    const currentTimeStr = `${currentHourStr}:${currentMinStr}`;
+    const localNowDateStr = localNow.toISOString().split("T")[0];
+
+    for (const b of results) {
+      let isDue = false;
+      const sched = b.scheduled_at;
+      const isDaily = sched && sched.length === 5 && sched.includes(":");
+      const isWeekly = sched && sched.includes("T") && sched.length < 15;
+      const isRecurring = isDaily || isWeekly;
+
+      // If it's recurring, verify it hasn't already been sent today
+      if (isRecurring && b.sent_at) {
+        try {
+          const lastSentLocal = new Date(new Date(b.sent_at).getTime() + offset);
+          const lastSentDateStr = lastSentLocal.toISOString().split("T")[0];
+          if (lastSentDateStr === localNowDateStr) {
+            // Already sent today, skip
+            continue;
+          }
+        } catch (e) {
+          console.error("Error parsing sent_at:", e);
+        }
+      }
+
+      if (!sched || sched === "immediate") {
+        isDue = true;
+      } else if (isDaily) {
+        isDue = currentTimeStr >= sched;
+      } else if (isWeekly) {
+        const parts = sched.split("T");
+        if (parts.length === 2 && dayOfWeek === parts[0] && currentTimeStr >= parts[1]) {
+          isDue = true;
+        }
+      } else if (sched.length >= 15) {
+        // ISO string fallback
+        isDue = now >= new Date(sched);
+      }
+
+      if (!isDue) continue;
+
+      try {
+        let payloadObj: any = undefined;
+        let text = b.content;
+        try {
+          const parsed = JSON.parse(b.content);
+          if (parsed && typeof parsed === "object" && parsed.tag) {
+            payloadObj = parsed;
+            text = "Scheduled message";
+          }
+        } catch (e) {}
+        
+        if (b.target_type === "private") {
+          const resolvedCode = await resolveEmployeeCode(b.target_value);
+          await sendPrivateMessage(resolvedCode, text, payloadObj);
+        } else {
+          await sendGroupMessage(b.target_value, text, undefined, payloadObj);
+        }
+        
+        if (isRecurring) {
+          db.prepare(
+            "UPDATE broadcasts SET sent_at = ? WHERE id = ?"
+          ).run(now.toISOString(), b.id);
+        } else {
+          db.prepare(
+            "UPDATE broadcasts SET status = 'sent', sent_at = ? WHERE id = ?"
+          ).run(now.toISOString(), b.id);
+        }
+        
+        console.log(`[Scheduler] Successfully dispatched local scheduled broadcast: ${b.title}`);
+      } catch (err: any) {
+        if (isRecurring) {
+          db.prepare(
+            "UPDATE broadcasts SET sent_at = ? WHERE id = ?"
+          ).run(now.toISOString(), b.id); // record execution attempt to prevent retrying constantly today
+        } else {
+          db.prepare(
+            "UPDATE broadcasts SET status = 'failed' WHERE id = ?"
+          ).run(b.id);
+        }
+        console.error(`[Scheduler] Failed to dispatch local scheduled broadcast: ${b.title}`, err);
+      }
+    }
+  } catch (e) {
+    console.error("Error in local scheduler interval:", e);
+  }
+}
+
+// Start local scheduler interval (every 10 seconds for high responsiveness during development)
+setInterval(runScheduledBroadcastsLocal, 10000);
 
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {

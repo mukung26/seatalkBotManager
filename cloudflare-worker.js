@@ -14,6 +14,33 @@
 const SEATALK_API = "https://openapi.seatalk.io";
 
 // Create tables automatically if they don't exist
+async function resolveEmployeeCode(env, targetId) {
+  if (!targetId.includes("@")) {
+    return targetId;
+  }
+  const token = await getAccessToken(env);
+  const res = await fetch(`${SEATALK_API}/contacts/v2/get_employee_code_with_email`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ emails: [targetId] })
+  });
+  if (res.ok) {
+    const data = await res.json();
+    if (data.code === 0 && data.employees && data.employees.length > 0) {
+      // Find the first matching employee with code 0 and status 2 (in position) if possible, else just first valid one
+      const emp = data.employees.find(e => e.code === 0 && e.employee_status === 2) || 
+                  data.employees.find(e => e.code === 0 && e.employee_code);
+      if (emp && emp.employee_code) {
+        return emp.employee_code;
+      }
+    }
+  }
+  return targetId;
+}
+
 async function ensureD1Tables(db) {
   if (!db) return;
   await db.exec("CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, chat_type TEXT, employee_code TEXT, group_id TEXT, group_name TEXT, user_name TEXT, user_email TEXT, last_message TEXT, last_message_time TEXT, unread_count INTEGER DEFAULT 0, status TEXT DEFAULT 'active');");
@@ -125,6 +152,7 @@ async function getEmployeeProfile(env, employeeCode) {
 
 async function sendPrivateMessage(env, employeeCode, text, messageObj, threadId) {
   const token = await getAccessToken(env);
+  const resolvedCode = await resolveEmployeeCode(env, employeeCode);
   const messageData = messageObj ? JSON.parse(JSON.stringify(messageObj)) : { tag: "text", text: { content: text } };
   if (threadId) {
     messageData.thread_id = threadId;
@@ -133,7 +161,7 @@ async function sendPrivateMessage(env, employeeCode, text, messageObj, threadId)
   const res = await fetch(`${SEATALK_API}/messaging/v2/single_chat`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ employee_code: employeeCode, message: messageData }),
+    body: JSON.stringify({ employee_code: resolvedCode, message: messageData }),
   });
   const data = await res.json();
   if (data.code !== 0) throw new Error(`SeaTalk API Error: ${JSON.stringify(data)}`);
@@ -274,35 +302,95 @@ async function runScheduledBroadcasts(env) {
   try {
     if (!env.DB) return;
     await ensureD1Tables(env.DB);
-    const nowIso = new Date().toISOString();
     const { results } = await env.DB.prepare(
-      "SELECT * FROM broadcasts WHERE status = 'pending' AND scheduled_at <= ?"
-    ).bind(nowIso).all();
+      "SELECT * FROM broadcasts WHERE status = 'pending' OR status = 'scheduled'"
+    ).all();
     
+    const now = new Date();
+    // Use UTC+8 for Manila/Singapore standard time
+    const offset = 8 * 60 * 60 * 1000;
+    const localNow = new Date(now.getTime() + offset);
+    const dayOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][localNow.getUTCDay()];
+    const currentHourStr = localNow.getUTCHours().toString().padStart(2, "0");
+    const currentMinStr = localNow.getUTCMinutes().toString().padStart(2, "0");
+    const currentTimeStr = `${currentHourStr}:${currentMinStr}`;
+    const localNowDateStr = localNow.toISOString().split("T")[0];
+
     for (const b of results) {
+      let isDue = false;
+      const sched = b.scheduled_at;
+      const isDaily = sched && sched.length === 5 && sched.includes(":");
+      const isWeekly = sched && sched.includes("T") && sched.length < 15;
+      const isRecurring = isDaily || isWeekly;
+
+      // If it's recurring, verify it hasn't already been sent today
+      if (isRecurring && b.sent_at) {
+        try {
+          const lastSentLocal = new Date(new Date(b.sent_at).getTime() + offset);
+          const lastSentDateStr = lastSentLocal.toISOString().split("T")[0];
+          if (lastSentDateStr === localNowDateStr) {
+            // Already sent today, skip
+            continue;
+          }
+        } catch (e) {
+          console.error("Error parsing sent_at:", e);
+        }
+      }
+
+      if (!sched || sched === "immediate") {
+        isDue = true;
+      } else if (isDaily) {
+        isDue = currentTimeStr >= sched;
+      } else if (isWeekly) {
+        const parts = sched.split("T");
+        if (parts.length === 2 && dayOfWeek === parts[0] && currentTimeStr >= parts[1]) {
+          isDue = true;
+        }
+      } else if (sched.length >= 15) {
+        // ISO string fallback
+        isDue = now >= new Date(sched);
+      }
+
+      if (!isDue) continue;
+
       try {
         let payloadObj = undefined;
-        if (b.msg_type === "interactive") {
-          try {
-            payloadObj = JSON.parse(b.content);
-          } catch(e) {}
-        }
+        let text = b.content;
+        try {
+          const parsed = JSON.parse(b.content);
+          if (parsed && typeof parsed === "object" && parsed.tag) {
+            payloadObj = parsed;
+            text = "Scheduled message";
+          }
+        } catch(e) {}
         
-        if (b.chat_type === "private") {
-          await sendPrivateMessage(env, b.target_id, b.msg_type === "text" ? b.content : "Scheduled card", payloadObj);
+        if (b.target_type === "private") {
+          await sendPrivateMessage(env, b.target_value, text, payloadObj);
         } else {
-          await sendGroupMessage(env, b.target_id, b.msg_type === "text" ? b.content : "Scheduled card", undefined, payloadObj);
+          await sendGroupMessage(env, b.target_value, text, undefined, payloadObj);
         }
         
-        await env.DB.prepare(
-          "UPDATE broadcasts SET status = 'sent', sent_at = ? WHERE id = ?"
-        ).bind(new Date().toISOString(), b.id).run();
+        if (isRecurring) {
+          await env.DB.prepare(
+            "UPDATE broadcasts SET sent_at = ? WHERE id = ?"
+          ).bind(now.toISOString(), b.id).run();
+        } else {
+          await env.DB.prepare(
+            "UPDATE broadcasts SET status = 'sent', sent_at = ? WHERE id = ?"
+          ).bind(now.toISOString(), b.id).run();
+        }
         
         await logEvent(env, "info", `Successfully dispatched scheduled broadcast: ${b.title}`, { id: b.id });
       } catch (err) {
-        await env.DB.prepare(
-          "UPDATE broadcasts SET status = 'failed' WHERE id = ?"
-        ).bind(b.id).run();
+        if (isRecurring) {
+          await env.DB.prepare(
+            "UPDATE broadcasts SET sent_at = ? WHERE id = ?"
+          ).bind(now.toISOString(), b.id).run(); // record execution attempt to prevent retrying constantly today
+        } else {
+          await env.DB.prepare(
+            "UPDATE broadcasts SET status = 'failed' WHERE id = ?"
+          ).bind(b.id).run();
+        }
         await logEvent(env, "error", `Failed to dispatch scheduled broadcast: ${b.title}`, { id: b.id, error: err.toString() });
       }
     }
