@@ -65,6 +65,7 @@ import {
   Calendar,
   Search,
   Layers,
+  Table,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Toaster } from "@/components/ui/sonner";
@@ -173,6 +174,91 @@ function LazyTab({ active, children }: { active: boolean, children: React.ReactN
     </div>
   );
 }
+
+const convertSeaTalkTableToMarkdown = (text: string): string => {
+  if (!text) return "";
+  
+  // Regex to match [[...]]
+  return text.replace(/\[\[([\s\S]*?)\]\]/g, (match, innerContent) => {
+    try {
+      // Split by '], [' or similar to get rows
+      const rowStrings = innerContent.split(/\]\s*,\s*\[/);
+      if (rowStrings.length === 0) return match;
+      
+      const rows = rowStrings.map(rowStr => {
+        let clean = rowStr.replace(/^\[/, "").replace(/\]$/, "");
+        return clean.split(",").map(val => val.trim());
+      });
+      
+      if (rows.length < 1) return match;
+      
+      const headerRow = rows[0];
+      const headerLine = `| ${headerRow.join(" | ")} |`;
+      const separatorLine = `| ${headerRow.map(() => "---").join(" | ")} |`;
+      
+      const dataLines = rows.slice(1).map(row => {
+        const paddedRow = [...row];
+        while (paddedRow.length < headerRow.length) {
+          paddedRow.push("");
+        }
+        return `| ${paddedRow.join(" | ")} |`;
+      });
+      
+      return "\n" + [headerLine, separatorLine, ...dataLines].join("\n") + "\n";
+    } catch (e) {
+      console.error("Error parsing SeaTalk table syntax:", e);
+      return match;
+    }
+  });
+};
+
+const ensureMarkdownTableSpacing = (text: string): string => {
+  if (!text) return "";
+  const lines = text.split("\n");
+  const processedLines: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const currentLine = lines[i];
+    const trimmed = currentLine.trim();
+
+    // Check if current line looks like a table row (starts and ends with |)
+    const isTableRow = trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length > 2;
+
+    if (isTableRow) {
+      // If the previous line is not empty and doesn't look like a table row, insert an empty line before
+      if (i > 0 && processedLines.length > 0) {
+        const prevLine = processedLines[processedLines.length - 1];
+        const prevTrimmed = prevLine.trim();
+        const prevIsTableRow = prevTrimmed.startsWith("|") && prevTrimmed.endsWith("|") && prevTrimmed.length > 2;
+        if (prevTrimmed !== "" && !prevIsTableRow) {
+          processedLines.push("");
+        }
+      }
+    }
+
+    processedLines.push(currentLine);
+
+    // If current line was a table row, and this is the last line or the next line does not look like a table row and is not empty, insert an empty line after
+    if (isTableRow && i < lines.length - 1) {
+      const nextLine = lines[i + 1];
+      const nextTrimmed = nextLine.trim();
+      const nextIsTableRow = nextTrimmed.startsWith("|") && nextTrimmed.endsWith("|") && nextTrimmed.length > 2;
+      if (nextTrimmed !== "" && !nextIsTableRow) {
+        processedLines.push("");
+      }
+    }
+  }
+
+  return processedLines.join("\n");
+};
+
+const formatMarkdownText = (text: string) => {
+  if (!text) return "";
+  // Ensure we decode double-escaped literal '\n' sequences into real newlines
+  const decoded = text.replace(/\\n/g, "\n");
+  const converted = convertSeaTalkTableToMarkdown(decoded);
+  return ensureMarkdownTableSpacing(converted);
+};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState(getInitialTab);
@@ -475,7 +561,7 @@ function ChatInterface() {
       toast.error("Limit exceeded: Max 3 Title elements allowed");
       return;
     }
-    if (type === "description" && descCount >= 5) {
+    if ((type === "description" || type === "table") && descCount >= 5) {
       toast.error("Limit exceeded: Max 5 Description elements allowed");
       return;
     }
@@ -501,31 +587,42 @@ function ChatInterface() {
       return;
     }
 
-    let item: any = { element_type: type };
-    if (type === "title") {
-      item.title = { text: "New Title" };
-    } else if (type === "description") {
-      item.description = {
-        format: 1,
-        text: "New Description content goes here...",
+    let item: any;
+    if (type === "table") {
+      item = {
+        element_type: "description",
+        description: {
+          format: 1,
+          text: "| Column 1 | Column 2 | Column 3 |\n| :--- | :---: | :---: |\n| Item A | 10 | Active |\n| Item B | 25 | Pending |",
+        },
       };
-    } else if (type === "button") {
-      item.button = {
-        button_type: "callback",
-        text: "New Button",
-        value: "btn_callback_val",
-      };
-    } else if (type === "button_group") {
-      item.button_group = [
-        { button_type: "callback", text: "Button A", value: "btn_a_val" },
-        { button_type: "callback", text: "Button B", value: "btn_b_val" },
-      ];
-    } else if (type === "image") {
-      // standard 2x2 placeholder transparent or grey dot
-      item.image = {
-        content:
-          "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVQYV2P8/uPnfwYGBgZGGAMAVe4H0WDm+2kAAAAASUVORK5CYII=",
-      };
+    } else {
+      item = { element_type: type };
+      if (type === "title") {
+        item.title = { text: "New Title" };
+      } else if (type === "description") {
+        item.description = {
+          format: 1,
+          text: "New Description content goes here...",
+        };
+      } else if (type === "button") {
+        item.button = {
+          button_type: "callback",
+          text: "New Button",
+          value: "btn_callback_val",
+        };
+      } else if (type === "button_group") {
+        item.button_group = [
+          { button_type: "callback", text: "Button A", value: "btn_a_val" },
+          { button_type: "callback", text: "Button B", value: "btn_b_val" },
+        ];
+      } else if (type === "image") {
+        // standard 2x2 placeholder transparent or grey dot
+        item.image = {
+          content:
+            "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVQYV2P8/uPnfwYGBgZGGAMAVe4H0WDm+2kAAAAASUVORK5CYII=",
+        };
+      }
     }
 
     setElementsList([...current, item]);
@@ -835,6 +932,54 @@ function ChatInterface() {
       },
     ]);
     toast.success("Loaded External Link template!");
+  };
+
+  const loadTableTemplate = () => {
+    setElementsDefault([
+      {
+        element_type: "title",
+        title: { text: "Weekly KPI Performance Report" },
+      },
+      {
+        element_type: "description",
+        description: {
+          format: 1,
+          text: "Here is the performance report for the team this week:\n\n| Employee | Target | Achieved | Status |\n| :--- | :---: | :---: | :---: |\n| John Doe | 100 | 112 | 🏆 Exceeded |\n| Jane Smith | 150 | 148 | 📈 On Track |\n| Bob Johnson | 80 | 65 | ⚠️ At Risk |\n\n*Please review and acknowledge by clicking below.*",
+        },
+      },
+      {
+        element_type: "button",
+        button: {
+          button_type: "callback",
+          text: "Acknowledge Report",
+          value: "kpi_acknowledged",
+          sim_response: "✅ **Report Acknowledged:** Thank you for reviewing this week's KPI performance report.",
+        },
+      },
+    ]);
+    setElementsZh([
+      {
+        element_type: "title",
+        title: { text: "每周 KPI 绩效报告" },
+      },
+      {
+        element_type: "description",
+        description: {
+          format: 1,
+          text: "这是本周团队的绩效报告：\n\n| 员工 | 目标值 | 实际完成 | 状态 |\n| :--- | :---: | :---: | :---: |\n| 约翰·多伊 | 100 | 112 | 🏆 超额完成 |\n| 简·史密斯 | 150 | 148 | 📈 正常推进 |\n| 鲍勃·约翰逊 | 80 | 65 | ⚠️ 存在风险 |\n\n*请审阅并在下方进行确认。*",
+        },
+      },
+      {
+        element_type: "button",
+        button: {
+          button_type: "callback",
+          text: "确认报告",
+          value: "kpi_acknowledged",
+          sim_response: "✅ **报告已确认：** 感谢您审阅本周的 KPI 绩效报告。",
+        },
+      },
+    ]);
+    toast.success("Loaded Table Format template!");
   };
 
   const handleInteractiveButtonClick = async (btn: any, messageId: string) => {
@@ -1650,12 +1795,12 @@ function ChatInterface() {
                                   </strong>
                                 )}
                                 {el.element_type === "description" && (
-                                  <div className="text-sm text-[#888888] mb-2 leading-relaxed whitespace-pre-wrap markdown-body [&>p]:mb-0 [&>ul]:list-disc [&>ul]:pl-5 [&>ol]:list-decimal [&>ol]:pl-5 [&>pre]:bg-black/10 [&>pre]:p-2 [&>pre]:rounded-md [&_code]:font-mono [&_code]:bg-black/10 [&_code]:px-1 [&_code]:rounded-sm leading-relaxed">
+                                  <div className="text-sm text-[#888888] mb-2 leading-relaxed markdown-body [&_p]:whitespace-pre-wrap [&_li]:whitespace-pre-wrap [&>p]:mb-0 [&>ul]:list-disc [&>ul]:pl-5 [&>ol]:list-decimal [&>ol]:pl-5 [&>pre]:bg-black/10 [&>pre]:p-2 [&>pre]:rounded-md [&_code]:font-mono [&_code]:bg-black/10 [&_code]:px-1 [&_code]:rounded-sm leading-relaxed">
                                     {el.description?.format === 1 ? (
                                       <ReactMarkdown
                                         remarkPlugins={[remarkGfm]}
                                       >
-                                        {el.description?.text}
+                                        {formatMarkdownText(el.description?.text)}
                                       </ReactMarkdown>
                                     ) : (
                                       el.description?.text
@@ -1749,9 +1894,9 @@ function ChatInterface() {
                             </div>
                           </div>
                         ) : (
-                          <div className="markdown-body whitespace-pre-wrap leading-relaxed [&>p]:mb-0 [&>ul]:list-disc [&>ul]:pl-5 [&>ol]:list-decimal [&>ol]:pl-5 [&>pre]:bg-black/10 [&>pre]:p-2 [&>pre]:rounded-md [&_code]:font-mono [&_code]:bg-black/10 [&_code]:px-1 [&_code]:rounded-sm">
+                          <div className="markdown-body leading-relaxed [&_p]:whitespace-pre-wrap [&_li]:whitespace-pre-wrap [&>p]:mb-0 [&>ul]:list-disc [&>ul]:pl-5 [&>ol]:list-decimal [&>ol]:pl-5 [&>pre]:bg-black/10 [&>pre]:p-2 [&>pre]:rounded-md [&_code]:font-mono [&_code]:bg-black/10 [&_code]:px-1 [&_code]:rounded-sm">
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {m.content}
+                              {formatMarkdownText(m.content)}
                             </ReactMarkdown>
                           </div>
                         )}
@@ -1852,6 +1997,15 @@ function ChatInterface() {
                     title="Quote"
                   >
                     <TextQuote size={16} />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-8 p-0 text-indigo-400 hover:bg-neutral-800"
+                    onClick={() => insertFormat("\n| Header 1 | Header 2 |\n| --- | --- |\n| Cell 1 | Cell 2 |\n| Cell 3 | Cell 4 |\n")}
+                    title="Table"
+                  >
+                    <Table size={16} />
                   </Button>
                   <Button
                     variant="ghost"
@@ -2045,6 +2199,14 @@ function ChatInterface() {
                 >
                   External Link
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs font-semibold px-2.5 bg-[#111] text-white border border-[#222] hover:bg-black cursor-pointer rounded-lg transition-all text-indigo-400 hover:text-indigo-300"
+                  onClick={loadTableTemplate}
+                >
+                  <Table size={12} className="mr-1 inline-block align-middle" /> Table Format
+                </Button>
               </div>
 
               <div className="flex items-center gap-2 bg-[#222] p-1 rounded-lg">
@@ -2190,6 +2352,14 @@ function ChatInterface() {
                         onClick={() => addElementToBuilder("description")}
                       >
                         <Plus size={14} className="mr-1" /> Description
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 text-indigo-400 border-indigo-950 bg-[#111] hover:bg-black cursor-pointer"
+                        onClick={() => addElementToBuilder("table")}
+                      >
+                        <Table size={14} className="mr-1" /> Table
                       </Button>
                       <Button
                         variant="outline"
@@ -2434,6 +2604,28 @@ function ChatInterface() {
                                   }
                                   className="min-h-[70px] max-h-24 rounded-lg text-sm text-[#ededed]"
                                 />
+                                {el.description?.format === 1 && (
+                                  <div className="flex justify-end mt-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const currentText = el.description?.text || "";
+                                        const tableTemplate = "\n| Column 1 | Column 2 |\n| --- | --- |\n| Row 1 | Row 1 Col 2 |\n| Row 2 | Row 2 Col 2 |";
+                                        updateElementField(idx, (prev) => ({
+                                          ...prev,
+                                          description: {
+                                            ...prev.description,
+                                            text: currentText + (currentText ? "\n" : "") + tableTemplate,
+                                          },
+                                        }));
+                                        toast.success("Inserted Markdown Table template!");
+                                      }}
+                                      className="text-[10px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 focus:outline-none cursor-pointer"
+                                    >
+                                      <Table size={10} /> Insert Table Template
+                                    </button>
+                                  </div>
+                                )}
                               </div>
                             )}
 
@@ -3071,11 +3263,11 @@ function ChatInterface() {
                             return (
                               <div
                                 key={idx}
-                                className="text-sm text-[#888888] mb-2 leading-relaxed whitespace-pre-wrap markdown-body [&>p]:mb-0 [&>ul]:list-disc [&>ul]:pl-5 [&>ol]:list-decimal [&>ol]:pl-5 [&>pre]:bg-black/10 [&>pre]:p-2 [&>pre]:rounded-md [&_code]:font-mono [&_code]:bg-black/10 [&_code]:px-1 [&_code]:rounded-sm leading-relaxed text-left"
+                                className="text-sm text-[#888888] mb-2 leading-relaxed markdown-body [&_p]:whitespace-pre-wrap [&_li]:whitespace-pre-wrap [&>p]:mb-0 [&>ul]:list-disc [&>ul]:pl-5 [&>ol]:list-decimal [&>ol]:pl-5 [&>pre]:bg-black/10 [&>pre]:p-2 [&>pre]:rounded-md [&_code]:font-mono [&_code]:bg-black/10 [&_code]:px-1 [&_code]:rounded-sm leading-relaxed text-left"
                               >
                                 {el.description?.format === 1 ? (
                                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                    {el.description?.text || ""}
+                                    {formatMarkdownText(el.description?.text || "")}
                                   </ReactMarkdown>
                                 ) : (
                                   el.description?.text || ""
@@ -3773,6 +3965,16 @@ function AutoReplyRules() {
                           title="Code Block"
                         >
                           <Code size={14} />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-indigo-400 hover:bg-neutral-800 hover:text-white"
+                          onClick={() => insertFormat("\n| Header 1 | Header 2 |\n| --- | --- |\n| Cell 1 | Cell 2 |\n| Cell 3 | Cell 4 |\n")}
+                          title="Table"
+                        >
+                          <Table size={14} />
                         </Button>
                         <Button
                           type="button"
@@ -5198,6 +5400,16 @@ function BroadcastsScheduler() {
                           title="Code Block"
                         >
                           <Code size={14} />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-indigo-400 hover:bg-neutral-800 hover:text-white"
+                          onClick={() => insertFormatInScheduler("\n| Header 1 | Header 2 |\n| --- | --- |\n| Cell 1 | Cell 2 |\n| Cell 3 | Cell 4 |\n")}
+                          title="Table"
+                        >
+                          <Table size={14} />
                         </Button>
                         <Button
                           type="button"

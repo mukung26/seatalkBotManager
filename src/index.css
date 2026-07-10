@@ -128,3 +128,54 @@
     @apply font-sans;
     }
 }
+
+/* Custom Markdown Table Styling for SeaTalk Simulator */
+.markdown-body table {
+  width: 100% !important;
+  border-collapse: collapse !important;
+  margin-top: 1rem !important;
+  margin-bottom: 1rem !important;
+  font-size: 0.85rem !important;
+  line-height: 1.25rem !important;
+  white-space: normal !important;
+  display: table !important;
+}
+
+.markdown-body thead {
+  display: table-header-group !important;
+}
+
+.markdown-body tbody {
+  display: table-row-group !important;
+}
+
+.markdown-body tr {
+  display: table-row !important;
+}
+
+.markdown-body th {
+  font-weight: 600 !important;
+  background-color: #1e1e24 !important;
+  color: #ffffff !important;
+  border: 1px solid #2d2d34 !important;
+  padding: 8px 12px !important;
+  text-align: left !important;
+  white-space: normal !important;
+  display: table-cell !important;
+}
+
+.markdown-body td {
+  border: 1px solid #2d2d34 !important;
+  padding: 8px 12px !important;
+  color: #d1d1d6 !important;
+  white-space: normal !important;
+  display: table-cell !important;
+}
+
+.markdown-body tr:nth-child(even) {
+  background-color: #121214 !important;
+}
+
+.markdown-body tr:hover {
+  background-color: #1a1a1f !important;
+}
