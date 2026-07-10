@@ -1815,7 +1815,9 @@ export default {
               }
             }
           } else if (
-            eventType === "new_mentioned_message_received_from_group_chat"
+            eventType === "new_mentioned_message_received_from_group_chat" ||
+            eventType === "new_message_received_from_group_chat" ||
+            (event.group_id && (event.message?.text?.content || event.message?.text?.plain_text))
           ) {
             // Prevent Bot Loop / Self-reply: Ignore bot messages
             const isBotSender = 

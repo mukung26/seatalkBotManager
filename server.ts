@@ -364,11 +364,11 @@ app.post('/api/seatalk/webhook', async (req, res) => {
            saveMessage((conv as any).id, { sender: 'bot', sender_name: 'Bot', content: replyText, employee_code: event.employee_code, is_auto_reply: true });
          }
        }
-    } else if (eventType === 'new_mentioned_message_received_from_group_chat') {
-       const content = event.message?.text?.content;
+    } else if (eventType === 'new_mentioned_message_received_from_group_chat' || eventType === 'new_message_received_from_group_chat' || (event.group_id && (event.message?.text?.content || event.message?.text?.plain_text))) {
+       const content = event.message?.text?.content || event.message?.text?.plain_text;
        if (content) {
          const conv = ensureConversation({ chat_type: 'group', group_id: event.group_id, group_name: event.group_name || event.group_id });
-         saveMessage((conv as any).id, { sender: 'user', sender_name: event.sender_employee_info?.en_name || event.employee_code, content, employee_code: event.employee_code, group_id: event.group_id, message_id: event.message_id });
+         saveMessage((conv as any).id, { sender: 'user', sender_name: event.sender_employee_info?.en_name || event.employee_code || 'User', content, employee_code: event.employee_code, group_id: event.group_id, message_id: event.message_id });
          
          const rep = getAutoReply(content);
          if (rep) {
@@ -395,20 +395,46 @@ app.post('/api/seatalk/webhook', async (req, res) => {
 
 // API Ext and Aligned Dashboard Routes
 
+function cleanupGroupChats() {
+  try {
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const groupConvs = db.prepare("SELECT * FROM conversations WHERE chat_type = 'group'").all() as any[];
+    for (const conv of groupConvs) {
+      // Delete old group chat messages older than 24h
+      db.prepare("DELETE FROM messages WHERE conversation_id = ? AND sent_at < ?").run(conv.id, oneDayAgo);
+      
+      // Update last message
+      const latestMsg = db.prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY sent_at DESC LIMIT 1").get(conv.id) as any;
+      if (latestMsg) {
+        db.prepare("UPDATE conversations SET last_message = ?, last_message_time = ? WHERE id = ?")
+          .run(latestMsg.content.substring(0, 80), latestMsg.sent_at, conv.id);
+      } else {
+        db.prepare("UPDATE conversations SET last_message = 'No active messages (24h)' WHERE id = ?")
+          .run(conv.id);
+      }
+    }
+  } catch (err) {
+    console.error("Error during automatic group chat cleanup:", err);
+  }
+}
+
 // 1. GET /api/dashboard/conversations
 app.get('/api/dashboard/conversations', (req, res) => {
+  cleanupGroupChats();
   const convs = db.prepare('SELECT * FROM conversations ORDER BY last_message_time DESC').all();
   res.json({ success: true, data: convs });
 });
 
 // Backward compatibility: GET /api/conversations
 app.get('/api/conversations', (req, res) => {
+  cleanupGroupChats();
   const convs = db.prepare('SELECT * FROM conversations ORDER BY last_message_time DESC').all();
   res.json(convs);
 });
 
 // 2. GET /api/dashboard/conversations/:id/messages
 app.get('/api/dashboard/conversations/:id/messages', (req, res) => {
+  cleanupGroupChats();
   const msgs = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY sent_at ASC').all(req.params.id);
   db.prepare('UPDATE conversations SET unread_count = 0 WHERE id = ?').run(req.params.id);
   res.json({ success: true, data: msgs });
@@ -416,6 +442,7 @@ app.get('/api/dashboard/conversations/:id/messages', (req, res) => {
 
 // Backward compatibility: GET /api/conversations/:id/messages
 app.get('/api/conversations/:id/messages', (req, res) => {
+  cleanupGroupChats();
   const msgs = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY sent_at ASC').all(req.params.id);
   db.prepare('UPDATE conversations SET unread_count = 0 WHERE id = ?').run(req.params.id);
   res.json(msgs);
@@ -608,6 +635,108 @@ app.put('/api/dashboard/messages/:id', (req, res) => {
   res.json({ success: true });
 });
 
+// 18.05 GET /api/dashboard/contacts
+app.get('/api/dashboard/contacts', async (req, res) => {
+  try {
+    const token = await getAccessToken();
+    let groups = [];
+    let empCodesToFetch = new Set<string>();
+
+    if (token) {
+      try {
+        const joinedRes = await fetch(`${SEATALK_API}/messaging/v2/group_chat/joined`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (joinedRes.ok) {
+          const joinedData = await joinedRes.json() as any;
+          const groupIds = joinedData.joined_group_chats?.group_id || [];
+          for (const gid of groupIds) {
+            const infoRes = await fetch(`${SEATALK_API}/messaging/v2/group_chat/info?group_id=${gid}`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (infoRes.ok) {
+              const infoData = await infoRes.json() as any;
+              if (infoData.group) {
+                groups.push({
+                  id: gid,
+                  name: infoData.group.group_name || gid,
+                  type: 'group'
+                });
+                if (infoData.group.group_user_list) {
+                  for (const u of infoData.group.group_user_list) {
+                    if (u.employee_code) empCodesToFetch.add(u.employee_code);
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching groups for contacts:", err);
+      }
+    }
+
+    // Add employee codes from local conversations
+    let convInfoByCode = new Map<string, { email: string, name: string }>();
+    try {
+      const results = db.prepare("SELECT * FROM conversations").all() as any[];
+      if (results) {
+        for (const row of results) {
+          const code = row.employee_code;
+          const uEmail = row.user_email;
+          const uName = row.user_name;
+          if (code) {
+            empCodesToFetch.add(code);
+            convInfoByCode.set(code, { email: uEmail || '', name: uName || '' });
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Failed fetching conversations for contacts:", err);
+    }
+
+    // Format employee profiles
+    const uniqueEmp = [];
+    let codesArr = Array.from(empCodesToFetch);
+    for (const code of codesArr) {
+      const convInfo = convInfoByCode.get(code);
+      let email = convInfo?.email || '';
+      let name = convInfo?.name || code;
+      uniqueEmp.push({
+        employee_code: code,
+        email: email,
+        name: name,
+        type: 'private'
+      });
+    }
+
+    res.json({ success: true, groups, employees: uniqueEmp });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 18.06 GET /api/dashboard/proxy-file
+app.get('/api/dashboard/proxy-file', async (req, res) => {
+  const fileUrl = req.query.url as string;
+  if (!fileUrl) return res.status(400).send("Missing url");
+  try {
+    const token = await getAccessToken();
+    const headers: any = {};
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    const response = await fetch(decodeURIComponent(fileUrl), { headers });
+    const contentType = response.headers.get("Content-Type") || "application/octet-stream";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    const buffer = await response.arrayBuffer();
+    res.send(Buffer.from(buffer));
+  } catch (e: any) {
+    res.status(500).send("Error proxying file: " + e.message);
+  }
+});
+
 // 18.1 POST /api/dashboard/ensure_conversation
 app.post('/api/dashboard/ensure_conversation', (req, res) => {
   const { chat_type, employee_code, user_name, user_email, group_id, group_name } = req.body;
@@ -798,6 +927,9 @@ async function runScheduledBroadcastsLocal() {
 
 // Start local scheduler interval (every 10 seconds for high responsiveness during development)
 setInterval(runScheduledBroadcastsLocal, 10000);
+
+// Run group chat message cleanup every 60 seconds
+setInterval(cleanupGroupChats, 60000);
 
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
