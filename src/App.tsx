@@ -5196,7 +5196,7 @@ function BroadcastsScheduler() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="manual_time">
-                          Manual Time/hour selector
+                          Daily (at Time)
                         </SelectItem>
                         <SelectItem value="weekly">Weekly</SelectItem>
                       </SelectContent>
@@ -5223,7 +5223,7 @@ function BroadcastsScheduler() {
                 {interval === "manual_time" && (
                   <div className="space-y-1">
                     <label className="text-xs font-semibold text-[#888888]">
-                      Selected Time
+                      Selected Time (UTC+8 / Manila Time)
                     </label>
                     <Input
                       type="time"
@@ -5237,7 +5237,7 @@ function BroadcastsScheduler() {
                 {interval === "weekly" && (
                   <div className="space-y-1">
                     <label className="text-xs font-semibold text-[#888888]">
-                      Selected Week Day & Time
+                      Selected Week Day & Time (UTC+8 / Manila Time)
                     </label>
                     <div className="flex gap-2">
                       <Select
