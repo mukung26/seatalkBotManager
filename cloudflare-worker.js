@@ -399,7 +399,7 @@ async function runScheduledBroadcasts(env) {
   }
 }
 
-async function callCloudflareAI(env, messageText) {
+async function callCloudflareAI(env, messageText, convId = null) {
   const aiBinding = env.AI || env.ai || env.WorkersAI || env.workers_ai;
   if (!aiBinding) {
     const keys = Object.keys(env || {});
@@ -409,31 +409,78 @@ async function callCloudflareAI(env, messageText) {
     return "⚠️ AI Assistant error: The Workers AI binding is missing in your Cloudflare Worker settings. Please add the 'Workers AI' binding in your Cloudflare Worker Settings > Variables > Service Bindings / AI Bindings and name the variable 'AI'.";
   }
   
-  // Try running models, with fallbacks
   const models = [
-    '@cf/meta/llama-3.2-1b-instruct',
-    '@cf/meta/llama-3.1-8b-instruct',
-    '@cf/meta/llama-3-8b-instruct',
-    '@cf/meta/llama-2-7b-chat-int8',
-    '@cf/meta/llama-2-7b-chat-fp16'
+    '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+    '@cf/zai-org/glm-4.7-flash',
+    '@cf/google/gemma-4-26b-a4b-it'
   ];
+
+  let systemPrompt = `You are a friendly, helpful conversational bot. Answer any questions clearly and concisely. You can use markdown formatting.`;
+
+  let messages = [
+    { 
+      role: "system", 
+      content: systemPrompt
+    }
+  ];
+
+  if (convId && env.DB) {
+    try {
+      // Check if it's a group chat conversation
+      const convInfo = await env.DB.prepare("SELECT chat_type, group_id FROM conversations WHERE id = ?").bind(String(convId)).first();
+      
+      if (convInfo && convInfo.chat_type === 'group' && convInfo.group_id) {
+        try {
+          const token = await getAccessToken(env);
+          const infoRes = await fetch(`${SEATALK_API}/messaging/v2/group_chat/info?group_id=${convInfo.group_id}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (infoRes.ok) {
+            const infoData = await infoRes.json();
+            if (infoData.group && infoData.group.group_user_list) {
+              const memberNames = infoData.group.group_user_list.map(u => u.name || u.employee_code).join(', ');
+              systemPrompt += `\n\nYou are currently chatting in a group chat. The members of this group are: ${memberNames}.`;
+              messages[0].content = systemPrompt;
+            }
+          }
+        } catch (e) {
+          console.error("Error fetching group members for AI:", e);
+        }
+      }
+
+      const historyResult = await env.DB.prepare(
+        "SELECT sender, content FROM messages WHERE conversation_id = ? ORDER BY sent_at DESC LIMIT 10"
+      ).bind(String(convId)).all();
+
+      if (historyResult && historyResult.results) {
+        // Reverse to get chronological order
+        const pastMessages = historyResult.results.reverse().map(msg => ({
+          role: msg.sender === 'user' ? 'user' : 'assistant',
+          content: msg.content
+        }));
+        
+        messages = messages.concat(pastMessages);
+      }
+    } catch (e) {
+      console.error("Error fetching conversation history for AI:", e);
+      messages.push({ role: "user", content: messageText });
+    }
+  } else {
+    messages.push({ role: "user", content: messageText });
+  }
+
+  // Ensure the last message is from the user if something went wrong
+  if (messages[messages.length - 1].role !== 'user') {
+    messages.push({ role: "user", content: messageText });
+  }
 
   let lastError = null;
   for (const model of models) {
     try {
-      await logEvent(env, "info", `Attempting Cloudflare AI inference`, { model, messageText });
+      await logEvent(env, "info", `Attempting Cloudflare AI inference`, { model, messagesCount: messages.length });
       
       const aiResponse = await aiBinding.run(model, {
-        messages: [
-          { 
-            role: "system", 
-            content: `You are a friendly, helpful conversational bot. Answer any questions clearly and concisely. You can use markdown formatting.`
-          },
-          { 
-            role: "user", 
-            content: messageText 
-          }
-        ]
+        messages: messages
       });
       
       await logEvent(env, "info", "AI Response Raw", { aiResponse });
@@ -1798,7 +1845,7 @@ export default {
                   content,
                 });
                 
-                const aiResponseText = await callCloudflareAI(env, content);
+                const aiResponseText = await callCloudflareAI(env, content, convId);
                 if (aiResponseText) {
                   const targetThreadId = event.message?.thread_id || event.message_id;
                   await sendPrivateMessage(env, event.employee_code, aiResponseText, undefined, targetThreadId);
@@ -1914,7 +1961,7 @@ export default {
                   content,
                 });
                 
-                const aiResponseText = await callCloudflareAI(env, content);
+                const aiResponseText = await callCloudflareAI(env, content, convId);
                 if (aiResponseText) {
                   const targetThreadId = event.message?.thread_id || event.message_id;
                   await sendGroupMessage(env, event.group_id, aiResponseText, targetThreadId, undefined);
