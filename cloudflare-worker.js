@@ -1609,37 +1609,35 @@ export default {
         let codesArr = Array.from(empCodesToFetch);
 
         if (codesArr.length > 0) {
-          const profiles = [];
-          for (let i = 0; i < codesArr.length; i++) {
-            profiles.push({ name: codesArr[i], email: "" });
-          }
-          
-          for (let i = 0; i < codesArr.length; i++) {
-            const code = codesArr[i];
-            const p = profiles[i];
+          const profilePromises = codesArr.map(async (code) => {
             const convInfo = convInfoByCode.get(code);
+            let name = convInfo?.name || code;
+            let email = convInfo?.email || "";
             
-            let email = p.email;
-            if (!email || email.endsWith("@seatalk.biz")) {
-               if (convInfo?.email && !convInfo.email.endsWith("@seatalk.biz")) {
-                 email = convInfo.email;
-               }
+            // If email is empty, or name is just code, fetch the live profile
+            if (!email || name === code || name.startsWith("e_") || email.endsWith("@seatalk.biz")) {
+              try {
+                const profile = await getEmployeeProfile(env, code);
+                if (profile.name && profile.name !== code) {
+                  name = profile.name;
+                }
+                if (profile.email) {
+                  email = profile.email;
+                }
+              } catch (err) {
+                console.error("Error fetching live profile for " + code, err);
+              }
             }
-            if (!email) email = "";
             
-            let name = p.name;
-            if (convInfo?.name && (!name || name === code || name.startsWith("e_"))) {
-               name = convInfo.name;
-            }
-            if (!name) name = code;
-
-            uniqueEmp.push({
+            return {
               employee_code: code,
               email: email,
               name: name,
               type: "private",
-            });
-          }
+            };
+          });
+          const results = await Promise.all(profilePromises);
+          uniqueEmp.push(...results);
         }
 
         return new Response(
@@ -2001,10 +1999,12 @@ export default {
                 event.sender_employee_info?.en_name ||
                 event.sender_employee_info?.name;
               let senderEmail = event.sender_employee_info?.email || "";
+              const actualEmployeeCode = event.sender_employee_info?.employee_code || event.employee_code || "";
+              
               if (!senderName || !senderEmail) {
                 const profile = await getEmployeeProfile(
                   env,
-                  event.employee_code,
+                  actualEmployeeCode,
                 );
                 if (!senderName) senderName = profile.name;
                 if (!senderEmail) senderEmail = profile.email;
@@ -2021,7 +2021,7 @@ export default {
                 sender: "user",
                 sender_name: senderName,
                 content,
-                employee_code: event.employee_code,
+                employee_code: actualEmployeeCode,
                 group_id: event.group_id,
                 message_id: event.message_id,
                 thread_id: event.message?.thread_id || "",
@@ -2030,7 +2030,7 @@ export default {
                 raw_message: JSON.stringify(event.message || {})
               });
 
-              const reply = await findMatchingRule(env, content, senderEmail, event.employee_code, "group");
+              const reply = await findMatchingRule(env, content, senderEmail, actualEmployeeCode, "group");
               if (reply) {
                 await logEvent(env, "info", "Sending group auto-reply", {
                   groupId: event.group_id,

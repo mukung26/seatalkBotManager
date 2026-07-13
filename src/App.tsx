@@ -1257,7 +1257,11 @@ function ChatInterface() {
       }
     }
     
-    return m.sender_name || empCode || "User";
+    if (m.sender_name && m.sender_name !== "User") {
+      return m.sender_name;
+    }
+    
+    return empCode || "User";
   };
 
   const getSenderEmail = (m: any) => {

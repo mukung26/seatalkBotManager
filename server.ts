@@ -225,6 +225,24 @@ async function resolveEmployeeCode(targetId: string) {
   return targetId;
 }
 
+async function getEmployeeProfile(employeeCode: string) {
+  const result = { name: employeeCode, email: "" };
+  try {
+    const token = await getAccessToken();
+    if (!token) return result;
+    const res = await fetch(`${SEATALK_API}/contacts/v2/profile?employee_code=${employeeCode}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const data = await res.json() as any;
+    if (data.code === 0 && data.employees?.length > 0) {
+      const emp = data.employees[0];
+      result.name = emp.en_name || emp.name || employeeCode;
+      result.email = emp.company_email || emp.email || "";
+    }
+  } catch (e) {}
+  return result;
+}
+
 async function sendPrivateMessage(employeeCode: string, text: string, messageObj?: any) {
   const token = await getAccessToken();
   if (!token) return;
@@ -698,17 +716,35 @@ app.get('/api/dashboard/contacts', async (req, res) => {
     // Format employee profiles
     const uniqueEmp = [];
     let codesArr = Array.from(empCodesToFetch);
-    for (const code of codesArr) {
+    const profilePromises = codesArr.map(async (code) => {
       const convInfo = convInfoByCode.get(code);
-      let email = convInfo?.email || '';
       let name = convInfo?.name || code;
-      uniqueEmp.push({
+      let email = convInfo?.email || '';
+      
+      // If email is empty or name is just code, fetch the live profile
+      if (!email || name === code || name.startsWith("e_") || email.endsWith("@seatalk.biz")) {
+        try {
+          const profile = await getEmployeeProfile(code);
+          if (profile.name && profile.name !== code) {
+            name = profile.name;
+          }
+          if (profile.email) {
+            email = profile.email;
+          }
+        } catch (err) {
+          console.error("Error fetching live profile for " + code, err);
+        }
+      }
+      
+      return {
         employee_code: code,
         email: email,
         name: name,
         type: 'private'
-      });
-    }
+      };
+    });
+    const results = await Promise.all(profilePromises);
+    uniqueEmp.push(...results);
 
     res.json({ success: true, groups, employees: uniqueEmp });
   } catch (err: any) {
