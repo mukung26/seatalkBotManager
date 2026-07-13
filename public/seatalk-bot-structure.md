@@ -1371,8 +1371,9 @@ async function sendPrivateMessage(employeeCode: string, text: string) {
 async function sendGroupMessage(groupId: string, text: string, threadId?: string) {
   const token = await getAccessToken();
   if (!token) return;
-  const body: any = { group_id: groupId, message: { tag: 'text', text: { content: text } } };
-  if (threadId) body.thread_id = threadId;
+  const messageData: any = { tag: 'text', text: { content: text } };
+  if (threadId) messageData.thread_id = threadId;
+  const body: any = { group_id: groupId, message: messageData };
   await fetch(`${SEATALK_API}/messaging/v2/group_chat`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },

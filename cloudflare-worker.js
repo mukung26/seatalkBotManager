@@ -1983,6 +1983,7 @@ export default {
           } else if (
             eventType === "new_mentioned_message_received_from_group_chat" ||
             eventType === "new_message_received_from_group_chat" ||
+            eventType === "new_message_received_from_thread" ||
             (event.group_id && (event.message?.text?.content || event.message?.text?.plain_text))
           ) {
             // Prevent Bot Loop / Self-reply: Ignore bot messages
@@ -1991,6 +1992,7 @@ export default {
               event.message?.sender_type === "bot" ||
               event.message?.is_bot === true ||
               event.sender_employee_info?.is_bot === true ||
+              event.message?.sender?.employee_code === "" || // Bot sender in thread has empty employee_code
               (event.message?.sender_id && event.message?.sender_id === env.SEATALK_APP_ID);
 
             if (isBotSender) {
@@ -2018,9 +2020,10 @@ export default {
             if (content) {
               let senderName =
                 event.sender_employee_info?.en_name ||
-                event.sender_employee_info?.name;
-              let senderEmail = event.sender_employee_info?.email || "";
-              let actualEmployeeCode = event.sender_employee_info?.employee_code || event.employee_code || "";
+                event.sender_employee_info?.name ||
+                event.message?.sender?.username;
+              let senderEmail = event.sender_employee_info?.email || event.message?.sender?.email || "";
+              let actualEmployeeCode = event.sender_employee_info?.employee_code || event.message?.sender?.employee_code || event.employee_code || "";
               
               if ((!senderEmail || !actualEmployeeCode) && event.message_id) {
                 const senderInfo = await getMessageSenderInfo(env, event.message_id);
@@ -2180,7 +2183,7 @@ export default {
               const existingAction = await firestoreRequest(env, "GET", `/message_actions/${actionDocId}`);
               if (existingAction && existingAction.name) {
                  const reply = "⚠️ You have already responded to this message.";
-                 const targetThreadId = messageId; // we can refine target thread if needed
+                 const targetThreadId = event.thread_id || messageId;
                  if (groupId) {
                     await sendGroupMessage(env, groupId, reply, targetThreadId);
                  } else {
@@ -2318,7 +2321,7 @@ export default {
             // Try to find original message to get sim_response and thread_id
             const originalDoc = await getMessageByMessageId(env, messageId);
             let simResponse = null;
-            let targetThreadId = messageId;
+            let targetThreadId = event.thread_id || messageId;
 
             if (originalDoc && originalDoc.fields) {
               if (originalDoc.fields.thread_id && originalDoc.fields.thread_id.stringValue) {
