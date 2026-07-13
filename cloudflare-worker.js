@@ -160,6 +160,27 @@ async function getEmployeeProfile(env, employeeCode) {
   return result;
 }
 
+async function getMessageSenderInfo(env, messageId) {
+  try {
+    const token = await getAccessToken(env);
+    if (!token) return null;
+    const res = await fetch(`${SEATALK_API}/messaging/v2/get_message_by_message_id?message_id=${messageId}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.code === 0 && data.sender) {
+      return {
+        employee_code: data.sender.employee_code || "",
+        email: data.sender.email || ""
+      };
+    }
+  } catch (e) {
+    console.error("Error in getMessageSenderInfo:", e);
+  }
+  return null;
+}
+
 async function sendPrivateMessage(env, employeeCode, text, messageObj, threadId) {
   const token = await getAccessToken(env);
   const resolvedCode = await resolveEmployeeCode(env, employeeCode);
@@ -1999,8 +2020,16 @@ export default {
                 event.sender_employee_info?.en_name ||
                 event.sender_employee_info?.name;
               let senderEmail = event.sender_employee_info?.email || "";
-              const actualEmployeeCode = event.sender_employee_info?.employee_code || event.employee_code || "";
+              let actualEmployeeCode = event.sender_employee_info?.employee_code || event.employee_code || "";
               
+              if ((!senderEmail || !actualEmployeeCode) && event.message_id) {
+                const senderInfo = await getMessageSenderInfo(env, event.message_id);
+                if (senderInfo) {
+                  if (senderInfo.employee_code) actualEmployeeCode = senderInfo.employee_code;
+                  if (senderInfo.email) senderEmail = senderInfo.email;
+                }
+              }
+
               if (!senderName || !senderEmail) {
                 const profile = await getEmployeeProfile(
                   env,

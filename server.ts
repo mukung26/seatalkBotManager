@@ -243,6 +243,27 @@ async function getEmployeeProfile(employeeCode: string) {
   return result;
 }
 
+async function getMessageSenderInfo(messageId: string) {
+  try {
+    const token = await getAccessToken();
+    if (!token) return null;
+    const res = await fetch(`${SEATALK_API}/messaging/v2/get_message_by_message_id?message_id=${messageId}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as any;
+    if (data.code === 0 && data.sender) {
+      return {
+        employee_code: data.sender.employee_code || "",
+        email: data.sender.email || ""
+      };
+    }
+  } catch (e) {
+    console.error("Error in getMessageSenderInfo:", e);
+  }
+  return null;
+}
+
 async function sendPrivateMessage(employeeCode: string, text: string, messageObj?: any) {
   const token = await getAccessToken();
   if (!token) return;
@@ -386,7 +407,37 @@ app.post('/api/seatalk/webhook', async (req, res) => {
        const content = event.message?.text?.content || event.message?.text?.plain_text;
        if (content) {
          const conv = ensureConversation({ chat_type: 'group', group_id: event.group_id, group_name: event.group_name || event.group_id });
-         saveMessage((conv as any).id, { sender: 'user', sender_name: event.sender_employee_info?.en_name || event.employee_code || 'User', content, employee_code: event.employee_code, group_id: event.group_id, message_id: event.message_id });
+         saveMessage((conv as any).id, { 
+            sender: 'user', 
+            sender_name: (event.sender_employee_info?.en_name || event.sender_employee_info?.name || event.employee_code || 'User'), 
+            content, 
+            employee_code: (event.sender_employee_info?.employee_code || event.employee_code || ''), 
+            group_id: event.group_id, 
+            message_id: event.message_id 
+          });
+
+          // Fetch real sender info in background or update it asynchronously
+          (async () => {
+            const actualEmployeeCode = event.sender_employee_info?.employee_code || event.employee_code || '';
+            let senderEmail = event.sender_employee_info?.email || '';
+            let senderName = event.sender_employee_info?.en_name || event.sender_employee_info?.name || '';
+            
+            if ((!senderEmail || !actualEmployeeCode) && event.message_id) {
+              const senderInfo = await getMessageSenderInfo(event.message_id);
+              if (senderInfo) {
+                const empCode = senderInfo.employee_code || actualEmployeeCode;
+                const email = senderInfo.email || senderEmail;
+                const profile = await getEmployeeProfile(empCode);
+                const name = profile.name || senderName;
+                
+                db.prepare('UPDATE messages SET sender_name = ?, employee_code = ? WHERE message_id = ?').run(
+                  name || 'User',
+                  empCode,
+                  event.message_id
+                );
+              }
+            }
+          })().catch(console.error);
          
          const rep = getAutoReply(content);
          if (rep) {
