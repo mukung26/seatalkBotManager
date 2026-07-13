@@ -1530,6 +1530,184 @@ export default {
       // 18.0 PUT /api/dashboard/messages/:id
       if (url.pathname.startsWith("/api/dashboard/messages/") && request.method === "PUT") {
         try {
+          const id = url.pathname.split("/").pop();
+          const { message_id, content, chat_type, target_id } = await request.json();
+          if (!id) throw new Error("Missing message DB ID");
+
+          await ensureD1Tables(env.DB);
+          const oldMsg = await env.DB.prepare("SELECT * FROM messages WHERE id = ?").bind(id).first();
+          if (!oldMsg) throw new Error("Message not found in DB");
+
+          await env.DB.prepare("UPDATE messages SET content = ? WHERE id = ?").bind(content, id).run();
+
+          const token = await getAccessToken(env);
+          if (token && message_id) {
+            let actualEmployeeCode = target_id;
+            if (chat_type === "private") {
+              actualEmployeeCode = await resolveEmployeeCode(env, target_id);
+            }
+            await fetch(`${SEATALK_API}/messaging/v2/update`, {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                message_id,
+                message: { tag: "text", text: { format: 1, content } }
+              }),
+            });
+          }
+          return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json", ...corsHeaders } });
+        } catch (err) {
+          return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+        }
+      }
+
+      if (url.pathname === "/api/stream/init" && request.method === "POST") {
+        const body = await request.json();
+        const { target_id, chat_type, thread_id, message } = body;
+        const token = await getAccessToken(env);
+        if (!token) return new Response(JSON.stringify({ error: "Failed to get token" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+
+        try {
+          let endpoint = '';
+          let payload: any = { message };
+          if (chat_type === 'private') {
+            const employeeCode = await resolveEmployeeCode(env, target_id);
+            endpoint = `${SEATALK_API}/messaging/v2/single_chat/init_stream`;
+            payload.employee_code = employeeCode;
+          } else {
+            endpoint = `${SEATALK_API}/messaging/v2/group_chat/init_stream`;
+            payload.group_id = target_id;
+          }
+          if (thread_id) payload.thread_id = thread_id;
+
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", ...corsHeaders } });
+        } catch (err: any) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+        }
+      }
+
+      if (url.pathname === "/api/stream/update" && request.method === "POST") {
+        const body = await request.json();
+        const { target_id, chat_type, stream_id, seq, finish, message } = body;
+        const token = await getAccessToken(env);
+        if (!token) return new Response(JSON.stringify({ error: "Failed to get token" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+
+        try {
+          let endpoint = '';
+          let payload: any = { stream_id, seq, finish, message };
+          if (chat_type === 'private') {
+            const employeeCode = await resolveEmployeeCode(env, target_id);
+            endpoint = `${SEATALK_API}/messaging/v2/single_chat/update_stream`;
+            payload.employee_code = employeeCode;
+          } else {
+            endpoint = `${SEATALK_API}/messaging/v2/group_chat/update_stream`;
+            payload.group_id = target_id;
+          }
+
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", ...corsHeaders } });
+        } catch (err: any) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+        }
+      }
+
+      if (url.pathname === "/api/typing" && request.method === "POST") {
+        const body = await request.json();
+        const { target_id, chat_type, thread_id } = body;
+        const token = await getAccessToken(env);
+        if (!token) return new Response(JSON.stringify({ error: "Failed to get token" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+
+        try {
+          let endpoint = '';
+          let payload: any = {};
+          if (chat_type === 'private') {
+            const employeeCode = await resolveEmployeeCode(env, target_id);
+            endpoint = `${SEATALK_API}/messaging/v2/single_chat_typing`;
+            payload.employee_code = employeeCode;
+          } else {
+            endpoint = `${SEATALK_API}/messaging/v2/group_chat_typing`;
+            payload.group_id = target_id;
+          }
+          if (thread_id) payload.thread_id = thread_id;
+
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", ...corsHeaders } });
+        } catch (err: any) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+        }
+      }
+
+      if (url.pathname === "/api/message" && request.method === "GET") {
+        const message_id = url.searchParams.get('message_id');
+        const token = await getAccessToken(env);
+        if (!token) return new Response(JSON.stringify({ error: "Failed to get token" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+
+        try {
+          const response = await fetch(`${SEATALK_API}/messaging/v2/get_message_by_message_id?message_id=${message_id}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          const data = await response.json();
+          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", ...corsHeaders } });
+        } catch (err: any) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+        }
+      }
+
+      if (url.pathname === "/api/thread" && request.method === "GET") {
+        const employee_code = url.searchParams.get('employee_code');
+        const thread_id = url.searchParams.get('thread_id');
+        const token = await getAccessToken(env);
+        if (!token) return new Response(JSON.stringify({ error: "Failed to get token" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+
+        try {
+          const employeeCode = await resolveEmployeeCode(env, employee_code as string);
+          const response = await fetch(`${SEATALK_API}/messaging/v2/single_chat/get_thread_by_thread_id?employee_code=${employeeCode}&thread_id=${thread_id}&page_size=50`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          const data = await response.json();
+          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", ...corsHeaders } });
+        } catch (err: any) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+        }
+      }
+
+      if (url.pathname === "/api/update_message" && request.method === "POST") {
+        const body = await request.json();
+        const { message_id, message } = body;
+        const token = await getAccessToken(env);
+        if (!token) return new Response(JSON.stringify({ error: "Failed to get token" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+
+        try {
+          const response = await fetch(`${SEATALK_API}/messaging/v2/update`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message_id, message }),
+          });
+          const data = await response.json();
+          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", ...corsHeaders } });
+        } catch (err: any) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+        }
+      }
+
+      if (url.pathname.startsWith("/api/dashboard/messages/") && request.method === "PUT") {
+        try {
           await ensureD1Tables(env.DB);
           const pathParts = url.pathname.split("/");
           const messageId = pathParts[4];

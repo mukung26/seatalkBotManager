@@ -917,6 +917,68 @@ app.post('/api/update_message', async (req, res) => {
   }
 });
 
+app.post('/api/stream/init', async (req, res) => {
+  const { target_id, chat_type, thread_id, message } = req.body;
+  const token = await getAccessToken();
+  if (!token) return res.status(500).json({ error: "Failed to get token" });
+
+  try {
+    let endpoint = '';
+    let body: any = { message };
+    if (chat_type === 'private') {
+      const employeeCode = await resolveEmployeeCode(target_id);
+      endpoint = `${SEATALK_API}/messaging/v2/single_chat/init_stream`;
+      body.employee_code = employeeCode;
+    } else {
+      endpoint = `${SEATALK_API}/messaging/v2/group_chat/init_stream`;
+      body.group_id = target_id;
+    }
+    
+    if (thread_id) {
+      body.thread_id = thread_id;
+    }
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/stream/update', async (req, res) => {
+  const { target_id, chat_type, stream_id, seq, finish, message } = req.body;
+  const token = await getAccessToken();
+  if (!token) return res.status(500).json({ error: "Failed to get token" });
+
+  try {
+    let endpoint = '';
+    let body: any = { stream_id, seq, finish, message };
+    if (chat_type === 'private') {
+      const employeeCode = await resolveEmployeeCode(target_id);
+      endpoint = `${SEATALK_API}/messaging/v2/single_chat/update_stream`;
+      body.employee_code = employeeCode;
+    } else {
+      endpoint = `${SEATALK_API}/messaging/v2/group_chat/update_stream`;
+      body.group_id = target_id;
+    }
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/typing', async (req, res) => {
   const { target_id, chat_type, thread_id } = req.body;
   const token = await getAccessToken();
