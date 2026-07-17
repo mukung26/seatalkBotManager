@@ -225,50 +225,10 @@ async function resolveEmployeeCode(targetId: string) {
   return targetId;
 }
 
-async function getEmployeeProfile(employeeCode: string) {
-  const result = { name: employeeCode, email: "" };
-  try {
-    const token = await getAccessToken();
-    if (!token) return result;
-    const res = await fetch(`${SEATALK_API}/contacts/v2/profile?employee_code=${employeeCode}`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    const data = await res.json() as any;
-    if (data.code === 0 && data.employees?.length > 0) {
-      const emp = data.employees[0];
-      result.name = emp.en_name || emp.name || employeeCode;
-      result.email = emp.company_email || emp.email || "";
-    }
-  } catch (e) {}
-  return result;
-}
-
-async function getMessageSenderInfo(messageId: string) {
-  try {
-    const token = await getAccessToken();
-    if (!token) return null;
-    const res = await fetch(`${SEATALK_API}/messaging/v2/get_message_by_message_id?message_id=${messageId}`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    if (!res.ok) return null;
-    const data = await res.json() as any;
-    if (data.code === 0 && data.sender) {
-      return {
-        employee_code: data.sender.employee_code || "",
-        email: data.sender.email || ""
-      };
-    }
-  } catch (e) {
-    console.error("Error in getMessageSenderInfo:", e);
-  }
-  return null;
-}
-
-async function sendPrivateMessage(employeeCode: string, text: string, messageObj?: any, threadId?: string) {
+async function sendPrivateMessage(employeeCode: string, text: string, messageObj?: any) {
   const token = await getAccessToken();
   if (!token) return;
   const messageData = messageObj ? messageObj : processMessageMentions({ tag: 'text', text: { content: text } });
-  if (threadId) messageData.thread_id = threadId;
   await fetch(`${SEATALK_API}/messaging/v2/single_chat`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -280,8 +240,8 @@ async function sendGroupMessage(groupId: string, text: string, threadId?: string
   const token = await getAccessToken();
   if (!token) return;
   const messageData = messageObj ? messageObj : processMessageMentions({ tag: 'text', text: { content: text } });
-  if (threadId) messageData.thread_id = threadId;
   const body: any = { group_id: groupId, message: messageData };
+  if (threadId) body.thread_id = threadId;
   await fetch(`${SEATALK_API}/messaging/v2/group_chat`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -314,9 +274,9 @@ function ensureConversation(info: any) {
 
 function saveMessage(convId: number, info: any) {
   db.prepare(`
-    INSERT INTO messages (conversation_id, message_id, sender, sender_name, content, message_type, employee_code, group_id, is_auto_reply, sent_at, thread_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(convId, info.message_id || '', info.sender, info.sender_name, info.content, 'text', info.employee_code || null, info.group_id || null, info.is_auto_reply ? 1 : 0, new Date().toISOString(), info.thread_id || '');
+    INSERT INTO messages (conversation_id, message_id, sender, sender_name, content, message_type, employee_code, group_id, is_auto_reply, sent_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(convId, info.message_id || '', info.sender, info.sender_name, info.content, 'text', info.employee_code || null, info.group_id || null, info.is_auto_reply ? 1 : 0, new Date().toISOString());
   
   db.prepare(`UPDATE conversations SET last_message = ?, last_message_time = ?, unread_count = unread_count + ? WHERE id = ?`)
     .run(info.content.substring(0, 80), new Date().toISOString(), info.is_auto_reply ? 0 : 1, convId);
@@ -395,59 +355,26 @@ app.post('/api/seatalk/webhook', async (req, res) => {
        const content = event.message?.text?.content;
        if (content) {
          const conv = ensureConversation({ chat_type: 'private', employee_code: event.employee_code, user_name: event.sender_employee_info?.en_name || event.employee_code, user_email: event.sender_employee_info?.email || '' });
-         saveMessage((conv as any).id, { sender: 'user', sender_name: event.sender_employee_info?.en_name || event.employee_code, content, employee_code: event.employee_code, message_id: event.message_id, thread_id: event.message?.thread_id || '' });
+         saveMessage((conv as any).id, { sender: 'user', sender_name: event.sender_employee_info?.en_name || event.employee_code, content, employee_code: event.employee_code, message_id: event.message_id });
          
          const rep = getAutoReply(content);
          if (rep) {
-           const targetThreadId = event.message?.thread_id || event.message_id;
            const { text: replyText, messageObj } = parseReplyMessage(rep);
-           await sendPrivateMessage(event.employee_code, replyText, messageObj, targetThreadId);
-           saveMessage((conv as any).id, { sender: 'bot', sender_name: 'Bot', content: replyText, employee_code: event.employee_code, is_auto_reply: true, thread_id: targetThreadId });
+           await sendPrivateMessage(event.employee_code, replyText, messageObj);
+           saveMessage((conv as any).id, { sender: 'bot', sender_name: 'Bot', content: replyText, employee_code: event.employee_code, is_auto_reply: true });
          }
        }
-    } else if (eventType === 'new_mentioned_message_received_from_group_chat' || eventType === 'new_message_received_from_group_chat' || eventType === 'new_message_received_from_thread' || (event.group_id && (event.message?.text?.content || event.message?.text?.plain_text))) {
+    } else if (eventType === 'new_mentioned_message_received_from_group_chat' || eventType === 'new_message_received_from_group_chat' || (event.group_id && (event.message?.text?.content || event.message?.text?.plain_text))) {
        const content = event.message?.text?.content || event.message?.text?.plain_text;
        if (content) {
          const conv = ensureConversation({ chat_type: 'group', group_id: event.group_id, group_name: event.group_name || event.group_id });
-         saveMessage((conv as any).id, { 
-            sender: 'user', 
-            sender_name: (event.sender_employee_info?.en_name || event.sender_employee_info?.name || event.message?.sender?.username || event.employee_code || 'User'), 
-            content, 
-            employee_code: (event.sender_employee_info?.employee_code || event.message?.sender?.employee_code || event.employee_code || ''), 
-            group_id: event.group_id, 
-            message_id: event.message_id,
-            thread_id: event.message?.thread_id || ''
-          });
-
-          // Fetch real sender info in background or update it asynchronously
-          (async () => {
-            const actualEmployeeCode = event.sender_employee_info?.employee_code || event.message?.sender?.employee_code || event.employee_code || '';
-            let senderEmail = event.sender_employee_info?.email || event.message?.sender?.email || '';
-            let senderName = event.sender_employee_info?.en_name || event.sender_employee_info?.name || '';
-            
-            if ((!senderEmail || !actualEmployeeCode) && event.message_id) {
-              const senderInfo = await getMessageSenderInfo(event.message_id);
-              if (senderInfo) {
-                const empCode = senderInfo.employee_code || actualEmployeeCode;
-                const email = senderInfo.email || senderEmail;
-                const profile = await getEmployeeProfile(empCode);
-                const name = profile.name || senderName;
-                
-                db.prepare('UPDATE messages SET sender_name = ?, employee_code = ? WHERE message_id = ?').run(
-                  name || 'User',
-                  empCode,
-                  event.message_id
-                );
-              }
-            }
-          })().catch(console.error);
+         saveMessage((conv as any).id, { sender: 'user', sender_name: event.sender_employee_info?.en_name || event.employee_code || 'User', content, employee_code: event.employee_code, group_id: event.group_id, message_id: event.message_id });
          
          const rep = getAutoReply(content);
          if (rep) {
-           const targetThreadId = event.message?.thread_id || event.message_id;
            const { text: replyText, messageObj } = parseReplyMessage(rep);
-           await sendGroupMessage(event.group_id, replyText, targetThreadId, messageObj);
-           saveMessage((conv as any).id, { sender: 'bot', sender_name: 'Bot', content: replyText, group_id: event.group_id, is_auto_reply: true, thread_id: targetThreadId });
+           await sendGroupMessage(event.group_id, replyText, event.thread_id, messageObj);
+           saveMessage((conv as any).id, { sender: 'bot', sender_name: 'Bot', content: replyText, group_id: event.group_id, is_auto_reply: true });
          }
        }
     } else if (eventType === 'user_enter_chatroom_with_bot') {
@@ -771,35 +698,17 @@ app.get('/api/dashboard/contacts', async (req, res) => {
     // Format employee profiles
     const uniqueEmp = [];
     let codesArr = Array.from(empCodesToFetch);
-    const profilePromises = codesArr.map(async (code) => {
+    for (const code of codesArr) {
       const convInfo = convInfoByCode.get(code);
-      let name = convInfo?.name || code;
       let email = convInfo?.email || '';
-      
-      // If email is empty or name is just code, fetch the live profile
-      if (!email || name === code || name.startsWith("e_") || email.endsWith("@seatalk.biz")) {
-        try {
-          const profile = await getEmployeeProfile(code);
-          if (profile.name && profile.name !== code) {
-            name = profile.name;
-          }
-          if (profile.email) {
-            email = profile.email;
-          }
-        } catch (err) {
-          console.error("Error fetching live profile for " + code, err);
-        }
-      }
-      
-      return {
+      let name = convInfo?.name || code;
+      uniqueEmp.push({
         employee_code: code,
         email: email,
         name: name,
         type: 'private'
-      };
-    });
-    const results = await Promise.all(profilePromises);
-    uniqueEmp.push(...results);
+      });
+    }
 
     res.json({ success: true, groups, employees: uniqueEmp });
   } catch (err: any) {
@@ -876,7 +785,7 @@ app.post('/api/dashboard/send', async (req, res) => {
     let actualEmployeeCode = target_id;
     if (chat_type === "private") {
       actualEmployeeCode = await resolveEmployeeCode(target_id);
-      await sendPrivateMessage(actualEmployeeCode, content, message_obj, thread_id);
+      await sendPrivateMessage(actualEmployeeCode, content, message_obj);
     } else if (chat_type === "group") {
       await sendGroupMessage(target_id, content, thread_id, message_obj);
     }
@@ -899,152 +808,6 @@ app.post('/api/dashboard/send', async (req, res) => {
 });
 
 // 19. POST /api/messages/send
-app.post('/api/update_message', async (req, res) => {
-  const { message_id, message } = req.body;
-  const token = await getAccessToken();
-  if (!token) return res.status(500).json({ error: "Failed to get token" });
-
-  try {
-    const response = await fetch(`${SEATALK_API}/messaging/v2/update`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message_id, message }),
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/stream/init', async (req, res) => {
-  const { target_id, chat_type, thread_id, message } = req.body;
-  const token = await getAccessToken();
-  if (!token) return res.status(500).json({ error: "Failed to get token" });
-
-  try {
-    let endpoint = '';
-    let body: any = { message };
-    if (chat_type === 'private') {
-      const employeeCode = await resolveEmployeeCode(target_id);
-      endpoint = `${SEATALK_API}/messaging/v2/single_chat/init_stream`;
-      body.employee_code = employeeCode;
-    } else {
-      endpoint = `${SEATALK_API}/messaging/v2/group_chat/init_stream`;
-      body.group_id = target_id;
-    }
-    
-    if (thread_id) {
-      body.thread_id = thread_id;
-    }
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/stream/update', async (req, res) => {
-  const { target_id, chat_type, stream_id, seq, finish, message } = req.body;
-  const token = await getAccessToken();
-  if (!token) return res.status(500).json({ error: "Failed to get token" });
-
-  try {
-    let endpoint = '';
-    let body: any = { stream_id, seq, finish, message };
-    if (chat_type === 'private') {
-      const employeeCode = await resolveEmployeeCode(target_id);
-      endpoint = `${SEATALK_API}/messaging/v2/single_chat/update_stream`;
-      body.employee_code = employeeCode;
-    } else {
-      endpoint = `${SEATALK_API}/messaging/v2/group_chat/update_stream`;
-      body.group_id = target_id;
-    }
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/typing', async (req, res) => {
-  const { target_id, chat_type, thread_id } = req.body;
-  const token = await getAccessToken();
-  if (!token) return res.status(500).json({ error: "Failed to get token" });
-
-  try {
-    let endpoint = '';
-    let body: any = {};
-    if (chat_type === 'private') {
-      const employeeCode = await resolveEmployeeCode(target_id);
-      endpoint = `${SEATALK_API}/messaging/v2/single_chat_typing`;
-      body = { employee_code: employeeCode };
-    } else {
-      endpoint = `${SEATALK_API}/messaging/v2/group_chat_typing`;
-      body = { group_id: target_id };
-    }
-    
-    if (thread_id) {
-      body.thread_id = thread_id;
-    }
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/message', async (req, res) => {
-  const { message_id } = req.query;
-  const token = await getAccessToken();
-  if (!token) return res.status(500).json({ error: "Failed to get token" });
-
-  try {
-    const response = await fetch(`${SEATALK_API}/messaging/v2/get_message_by_message_id?message_id=${message_id}`, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/thread', async (req, res) => {
-  const { employee_code, thread_id } = req.query;
-  const token = await getAccessToken();
-  if (!token) return res.status(500).json({ error: "Failed to get token" });
-
-  try {
-    const employeeCode = await resolveEmployeeCode(employee_code as string);
-    const response = await fetch(`${SEATALK_API}/messaging/v2/single_chat/get_thread_by_thread_id?employee_code=${employeeCode}&thread_id=${thread_id}&page_size=50`, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 app.post('/api/messages/send', async (req, res) => {
   const { conversation_id, content } = req.body;
   const conv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(conversation_id) as any;

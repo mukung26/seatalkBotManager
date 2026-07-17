@@ -1232,54 +1232,21 @@ function ChatInterface() {
 
   const activeConv = conversations.find((c) => c.id === activeConvId);
 
-  const getMsgEmployeeCode = (m: any) => {
-    if (m.employee_code) return m.employee_code;
-    if (m.raw_message) {
-      try {
-        const raw = JSON.parse(m.raw_message);
-        if (raw && raw.sender_id) return raw.sender_id;
-      } catch (e) {}
-    }
-    return "";
-  };
-
-  const getSenderName = (m: any) => {
-    if (m.sender === "admin") return "Admin";
-    if (m.sender === "bot") return m.sender_name || "Bot";
-    
-    const empCode = getMsgEmployeeCode(m);
-    
-    // Find in contacts
-    if (empCode) {
-      const contact = contacts.find((co) => co.employee_code === empCode);
-      if (contact?.name && contact.name !== empCode) {
-        return contact.name;
-      }
-    }
-    
-    if (m.sender_name && m.sender_name !== "User") {
-      return m.sender_name;
-    }
-    
-    return empCode || "User";
-  };
-
   const getSenderEmail = (m: any) => {
     if (m.sender === "admin") return "admin@dashboard.local";
     if (m.sender === "bot") return "bot@seatalk.biz";
     
-    const empCode = getMsgEmployeeCode(m);
-    
     // Find in contacts
-    if (empCode) {
-      const contact = contacts.find((co) => co.employee_code === empCode);
-      if (contact?.email) {
+    if (m.employee_code) {
+      const contact = contacts.find((co) => co.employee_code === m.employee_code);
+      if (contact?.email && !contact.email.endsWith("@seatalk.biz")) {
         return contact.email;
       }
+      if (contact?.email) return contact.email;
     }
     
     // Fallback to conversation fields if it's a private chat with the same employee code
-    if (activeConv && activeConv.chat_type === "private" && activeConv.employee_code === empCode) {
+    if (activeConv && activeConv.chat_type === "private" && activeConv.employee_code === m.employee_code) {
       if (activeConv.user_email && !activeConv.user_email.endsWith("@seatalk.biz")) {
         return activeConv.user_email;
       }
@@ -1746,7 +1713,7 @@ function ChatInterface() {
                       )}
                     >
                       <span className="text-xs text-[#888888] mb-1 px-1">
-                        {getSenderName(m)}
+                        {m.sender_name}
                         {m.sender === "user" && (() => {
                           const email = getSenderEmail(m);
                           return email ? ` (${email})` : "";

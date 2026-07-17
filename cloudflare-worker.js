@@ -13,6 +13,38 @@
 
 const SEATALK_API = "https://openapi.seatalk.io";
 
+const PROCESSED_MESSAGES = new Set();
+function trackMessageId(messageId) {
+  if (!messageId) return false;
+  if (PROCESSED_MESSAGES.has(messageId)) {
+    return true; // Already processed
+  }
+  PROCESSED_MESSAGES.add(messageId);
+  if (PROCESSED_MESSAGES.size > 1000) {
+    const iterator = PROCESSED_MESSAGES.values();
+    for (let i = 0; i < 200; i++) {
+      const nextVal = iterator.next();
+      if (nextVal.done) break;
+      PROCESSED_MESSAGES.delete(nextVal.value);
+    }
+  }
+  return false;
+}
+
+async function isDuplicateMessage(env, messageId) {
+  if (!messageId || !env.DB) return false;
+  try {
+    await ensureD1Tables(env.DB);
+    const row = await env.DB.prepare(
+      "SELECT id FROM messages WHERE message_id = ?"
+    ).bind(messageId).first();
+    return !!row;
+  } catch (e) {
+    console.error("Error in isDuplicateMessage:", e);
+    return false;
+  }
+}
+
 // Create tables automatically if they don't exist
 async function resolveEmployeeCode(env, targetId) {
   if (!targetId.includes("@")) {
@@ -158,27 +190,6 @@ async function getEmployeeProfile(env, employeeCode) {
     }
   } catch(e) {}
   return result;
-}
-
-async function getMessageSenderInfo(env, messageId) {
-  try {
-    const token = await getAccessToken(env);
-    if (!token) return null;
-    const res = await fetch(`${SEATALK_API}/messaging/v2/get_message_by_message_id?message_id=${messageId}`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (data.code === 0 && data.sender) {
-      return {
-        employee_code: data.sender.employee_code || "",
-        email: data.sender.email || ""
-      };
-    }
-  } catch (e) {
-    console.error("Error in getMessageSenderInfo:", e);
-  }
-  return null;
 }
 
 async function sendPrivateMessage(env, employeeCode, text, messageObj, threadId) {
@@ -430,29 +441,98 @@ async function runScheduledBroadcasts(env) {
   }
 }
 
-async function getQuotedImageBase64(env, messageId) {
+async function getQuotedImageBase64(env, messageId, groupId = null, threadId = null) {
   if (!messageId) return null;
+  
+  // 1. First, attempt to retrieve from local SQLite DB
+  if (env.DB) {
+    try {
+      const dbMsg = await env.DB.prepare(
+        "SELECT raw_message, tag FROM messages WHERE message_id = ?"
+      ).bind(messageId).first();
+      
+      if (dbMsg && dbMsg.raw_message) {
+        const raw = JSON.parse(dbMsg.raw_message);
+        if (dbMsg.tag === "image" && raw.image) {
+          await logEvent(env, "info", "Found quoted image in local database", { messageId });
+          const base64 = await getMessageImageBase64(env, raw.image);
+          if (base64) return base64;
+        }
+      }
+    } catch (e) {
+      console.error("Error querying SQLite for quoted image:", e);
+    }
+  }
+
+  // 2. If it's a group chat, retrieve via SeaTalk get_thread_by_thread_id API
+  if (groupId) {
+    const targetThreadId = threadId || messageId;
+    if (targetThreadId) {
+      try {
+        await logEvent(env, "info", "Fetching quoted image from thread API", { groupId, targetThreadId, messageId });
+        const token = await getAccessToken(env);
+        const url = `${SEATALK_API}/messaging/v2/group_chat/get_thread_by_thread_id?group_id=${encodeURIComponent(groupId)}&thread_id=${encodeURIComponent(targetThreadId)}&page_size=100`;
+        const res = await fetch(url, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        
+        if (res.ok) {
+          const data = await res.json();
+          if (data.code === 0 && data.thread_messages && Array.isArray(data.thread_messages)) {
+            // First, look for the specific quoted message
+            const targetMsg = data.thread_messages.find(m => m.message_id === messageId);
+            if (targetMsg && (targetMsg.tag === "image" || targetMsg.image)) {
+              await logEvent(env, "info", "Found specific quoted image in thread messages", { messageId });
+              const base64 = await getMessageImageBase64(env, targetMsg.image);
+              if (base64) return base64;
+            }
+            
+            // Fallback: If not the exact message ID but there's an image in the thread, use the most recent image
+            const anyImageMsg = data.thread_messages
+              .filter(m => (m.tag === "image" || m.image))
+              .sort((a, b) => (b.message_sent_time || 0) - (a.message_sent_time || 0))[0];
+              
+            if (anyImageMsg && anyImageMsg.image) {
+              await logEvent(env, "info", "Found fallback image in thread messages", { threadMessageId: anyImageMsg.message_id });
+              const base64 = await getMessageImageBase64(env, anyImageMsg.image);
+              if (base64) return base64;
+            }
+          }
+        } else {
+          console.error("get_thread_by_thread_id API returned non-ok status:", res.status);
+        }
+      } catch (e) {
+        console.error("Error calling get_thread_by_thread_id:", e);
+      }
+    }
+  }
+
+  // 3. Keep the original endpoint as fallback in case it exists/works for some configurations
   try {
     const token = await getAccessToken(env);
     const res = await fetch(`${SEATALK_API}/messaging/v2/get_message_by_message_id?message_id=${messageId}`, {
       headers: { Authorization: `Bearer ${token}` }
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (data.code === 0 && data.tag === "image" && data.image && data.image.content) {
-      return await getMessageImageBase64(env, data.image);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.code === 0 && data.tag === "image" && data.image && data.image.content) {
+        return await getMessageImageBase64(env, data.image);
+      }
     }
   } catch (e) {
-    console.error("Error fetching quoted image:", e);
+    console.error("Error in fallback fetch quoted image:", e);
   }
+
   return null;
 }
 
 async function getMessageImageBase64(env, imageObj) {
-  if (!imageObj || !imageObj.content) return null;
+  if (!imageObj) return null;
+  const url = imageObj.content || imageObj.image_url || imageObj.url;
+  if (!url) return null;
   try {
     const token = await getAccessToken(env);
-    const imgRes = await fetch(imageObj.content, {
+    const imgRes = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` }
     });
     if (!imgRes.ok) return null;
@@ -472,10 +552,81 @@ async function getMessageImageBase64(env, imageObj) {
   return null;
 }
 
-async function callGrokAI(env, messageText, convId = null, base64Image = null, senderName = null) {
-  const apiKey = env.GROQ_API_KEY || env.XAI_API_KEY;
-  if (!apiKey) {
-    return "⚠️ AI error: GROQ_API_KEY or XAI_API_KEY secret is not set. Add it in Worker Settings → Variables and Secrets.";
+async function initSeaTalkStream(env, chatType, targetId, threadId = null, quotedMessageId = null) {
+  try {
+    const token = await getAccessToken(env);
+    const endpoint = chatType === "group"
+      ? `${SEATALK_API}/messaging/v2/group_chat/init_stream`
+      : `${SEATALK_API}/messaging/v2/single_chat/init_stream`;
+
+    const body = {
+      message: {
+        tag: "text",
+        text: { format: 1, content: "..." }
+      }
+    };
+
+    let resolvedCode = targetId;
+    if (chatType === "group") {
+      body.group_id = targetId;
+      if (threadId) body.thread_id = threadId;
+      if (quotedMessageId) body.message.quoted_message_id = quotedMessageId;
+    } else {
+      resolvedCode = await resolveEmployeeCode(env, targetId);
+      body.employee_code = resolvedCode;
+      if (threadId) body.message.thread_id = threadId;
+    }
+
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    
+    if (res.ok) {
+      const data = await res.json();
+      if (data.code === 0 && data.stream_id) {
+        const streamId = data.stream_id;
+        let seq = 1;
+        let lastCallTime = 0;
+
+        return async (fullContent, isFinal) => {
+          const now = Date.now();
+          if (!isFinal && now - lastCallTime < 250) return;
+          lastCallTime = now;
+
+          const updateEndpoint = chatType === "group"
+            ? `${SEATALK_API}/messaging/v2/group_chat/update_stream`
+            : `${SEATALK_API}/messaging/v2/single_chat/update_stream`;
+
+          const updateBody = {
+            stream_id: streamId,
+            seq: seq++,
+            finish: isFinal,
+            message: { text: { format: 1, content: fullContent } }
+          };
+
+          if (chatType === "group") updateBody.group_id = targetId;
+          else updateBody.employee_code = resolvedCode;
+
+          await fetch(updateEndpoint, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify(updateBody)
+          });
+        };
+      }
+    }
+  } catch (e) {
+    console.error("Failed to init stream:", e);
+  }
+  return null;
+}
+
+async function callWorkersAI(env, messageText, convId = null, base64Image = null, senderName = null, threadId = null, onChunk = null) {
+  const aiBinding = env.AI || env.ai || env.WorkersAI || env.workers_ai;
+  if (!aiBinding) {
+    return "⚠️ AI error: Workers AI service binding 'AI' is not declared on this worker. Add it in Worker Settings → Variables → AI Bindings.";
   }
 
   let systemPrompt = `You are a fun, casual, and witty AI conversational partner — like a cool friend who happens to be super smart.
@@ -485,7 +636,9 @@ You MUST follow these rules:
 3. If you don't have specific information about a person, use a playful or sarcastic dark humor response instead of a lecturing or preachy one. Do NOT give moral lessons or preach about boundaries.
 4. When looking at images, respond casually and naturally — like a friend would. Don't give clinical descriptions or formal evaluations. Be fun, opinionated, and direct.
 5. Keep responses coherent and avoid repeating the same words or characters infinitely.
-6. You can use markdown formatting but keep it light — don't over-structure your responses.`;
+6. You can use markdown formatting but keep it light — don't over-structure your responses.
+7. Do NOT casually bring up, talk about, or mention other members of the group chat unless they are explicitly mentioned, named, or asked about by the user in the current message or conversation. Focus strictly on the user or the specific people they are asking about.
+8. CRITICAL: If you are asked who made you, who created you, or who your developer is, you MUST follow the specific instruction provided regarding your creator's identity.`;
 
   let messages = [
     { 
@@ -500,6 +653,8 @@ You MUST follow these rules:
       const convInfo = await env.DB.prepare("SELECT chat_type, group_id FROM conversations WHERE id = ?").bind(String(convId)).first();
       
       if (convInfo && convInfo.chat_type === 'group' && convInfo.group_id) {
+        systemPrompt += `\n\nCRITICAL INSTRUCTION: If anyone asks who made you, who is your developer, or who created you, you MUST reply by mentioning them exactly like this (do NOT use any other format or ID): <mention-tag target="seatalk://user?email=segagt505@shopeemobile-external.com"/>`;
+        messages[0].content = systemPrompt;
         try {
           const token = await getAccessToken(env);
           const infoRes = await fetch(`${SEATALK_API}/messaging/v2/group_chat/info?group_id=${convInfo.group_id}`, {
@@ -514,18 +669,28 @@ You MUST follow these rules:
                 if (u.employee_code) return `${nameParts} (ID: ${u.employee_code})`;
                 return nameParts;
               }).filter(Boolean).join(', ');
-              systemPrompt += `\n\nYou are currently chatting in a group chat. The members of this group are: ${memberNames}. To mention a particular user, you MUST write their name followed by their mention tag. If they have an email, use: <mention-tag target="seatalk://user?email=THEIR_EMAIL"/>, otherwise use ID: <mention-tag target="seatalk://user?id=THEIR_ID"/>. Example: @John <mention-tag target="seatalk://user?email=john@example.com"/>`;
+              systemPrompt += `\n\nYou are currently chatting in a group chat. The members of this group are: ${memberNames}. To mention a particular user, you MUST write their name followed by their mention tag. If they have an email, use EXACTLY this format: <mention-tag target="seatalk://user?email=THEIR_EMAIL"/>. Do NOT combine 'id' and 'email' in the target. If they only have an ID, use: <mention-tag target="seatalk://user?id=THEIR_ID"/>. Example: @John <mention-tag target="seatalk://user?email=john@example.com"/>`;
               messages[0].content = systemPrompt;
             }
           }
         } catch (e) {
           console.error("Error fetching group members for AI:", e);
         }
+      } else if (convInfo && convInfo.chat_type === 'private') {
+        systemPrompt += `\n\nCRITICAL INSTRUCTION: You are in a private chat. If anyone asks who made you, who is your developer, or who created you, you MUST reply with this exact profile link: https://link.seatalk.io/profile/open?seatalk_id=1223036706`;
+        messages[0].content = systemPrompt;
       }
 
-      const historyResult = await env.DB.prepare(
-        "SELECT sender, sender_name, employee_code, content FROM messages WHERE conversation_id = ? ORDER BY sent_at DESC LIMIT 10"
-      ).bind(String(convId)).all();
+      let historyResult;
+      if (threadId) {
+        historyResult = await env.DB.prepare(
+          "SELECT sender, sender_name, employee_code, content FROM messages WHERE conversation_id = ? AND (thread_id = ? OR message_id = ? OR id = ?) ORDER BY sent_at DESC LIMIT 10"
+        ).bind(String(convId), String(threadId), String(threadId), String(threadId)).all();
+      } else {
+        historyResult = await env.DB.prepare(
+          "SELECT sender, sender_name, employee_code, content FROM messages WHERE conversation_id = ? AND (thread_id IS NULL OR thread_id = '') ORDER BY sent_at DESC LIMIT 10"
+        ).bind(String(convId)).all();
+      }
 
       if (historyResult && historyResult.results) {
         // Reverse to get chronological order
@@ -562,55 +727,192 @@ You MUST follow these rules:
     messages.push({ role: "user", content: content });
   }
 
-  try {
-    await logEvent(env, "info", `Attempting Groq AI inference`, { messagesCount: messages.length });
-    
-    // Check if the user is using a Groq key (usually starts with gsk_)
-    const isGroq = !!env.GROQ_API_KEY || apiKey.startsWith("gsk_");
-    const apiEndpoint = isGroq ? "https://api.groq.com/openai/v1/chat/completions" : "https://api.x.ai/v1/chat/completions";
-    let apiModel = isGroq ? "llama-3.3-70b-versatile" : "grok-3";
-
-    if (base64Image) {
-      if (isGroq) apiModel = "llama-3.2-90b-vision-instruct";
-      else apiModel = "grok-2-vision-1212";
+  // Try Gemini API first if GEMINI_API_KEY is available
+  const geminiApiKey = env.GEMINI_API_KEY || (typeof process !== "undefined" ? process.env?.GEMINI_API_KEY : null);
+  if (geminiApiKey && geminiApiKey !== "MY_GEMINI_API_KEY") {
+    try {
+      await logEvent(env, "info", `Attempting Gemini API inference for bot response`, { messagesCount: messages.length, hasImage: !!base64Image });
       
-      const lastMsg = messages[messages.length - 1];
-      if (lastMsg && lastMsg.role === "user") {
-        lastMsg.content = [
-          { type: "text", text: lastMsg.content },
-          { type: "image_url", image_url: { url: base64Image } }
-        ];
+      const geminiContents = [];
+      for (const msg of messages) {
+        if (msg.role === "system") continue;
+        const role = msg.role === "assistant" ? "model" : "user";
+        geminiContents.push({
+          role: role,
+          parts: [{ text: msg.content }]
+        });
       }
+      
+      if (base64Image) {
+        let mimeType = "image/jpeg";
+        let rawBase64 = base64Image;
+        if (base64Image.startsWith("data:")) {
+          const parts = base64Image.split(";base64,");
+          if (parts.length === 2) {
+            mimeType = parts[0].substring(5);
+            rawBase64 = parts[1];
+          }
+        }
+        
+        const imagePart = {
+          inlineData: {
+            mimeType: mimeType,
+            data: rawBase64
+          }
+        };
+        
+        // Find the last user message, or append to contents
+        let lastUserMsg = geminiContents.filter(m => m.role === "user").slice(-1)[0];
+        if (!lastUserMsg) {
+          lastUserMsg = { role: "user", parts: [] };
+          geminiContents.push(lastUserMsg);
+        }
+        // Add detailed OCR/table reading instructions to the prompt to be 100% accurate
+        lastUserMsg.parts.push({
+          text: "\n\n(IMPORTANT INSTRUCTION: If there is a spreadsheet or table in this image, perform a precise column-by-column and row-by-row analysis. Pay very close attention to numeric columns such as 'Target' and 'Attainment' or percentages. Compare all agent records carefully. Double-check your numbers against the row labels/emails before responding to ensure your answer is perfectly accurate.)"
+        });
+        lastUserMsg.parts.unshift(imagePart);
+      }
+      
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:${onChunk ? 'streamGenerateContent?alt=sse&' : 'generateContent?'}key=${geminiApiKey}`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: geminiContents,
+          systemInstruction: {
+            parts: [{ text: systemPrompt }]
+          },
+          safetySettings: [
+            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+          ],
+          generationConfig: {
+            temperature: 0.3
+          }
+        })
+      });
+      
+      if (response.ok) {
+        if (onChunk) {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder("utf-8");
+          let buffer = "";
+          let fullText = "";
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop();
+
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                const dataStr = line.slice(6);
+                if (dataStr === "[DONE]") continue;
+                try {
+                  const data = JSON.parse(dataStr);
+                  const chunk = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                  if (chunk) {
+                    fullText += chunk;
+                    await onChunk(fullText, false);
+                  }
+                } catch(e) {}
+              }
+            }
+          }
+          await onChunk(fullText, true);
+          return fullText;
+        } else {
+          const data = await response.json();
+          const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (responseText) {
+            await logEvent(env, "info", "Gemini API Response Successful", { length: responseText.length });
+            return responseText;
+          }
+        }
+      } else {
+        const errText = await response.text();
+        console.error("Gemini API returned error:", response.status, errText);
+        await logEvent(env, "error", "Gemini API Error Response", { status: response.status, error: errText });
+      }
+    } catch (e) {
+      console.error("Error calling Gemini API:", e);
+      await logEvent(env, "error", "Gemini API Exception", { error: e.toString() });
     }
+  }
 
-    const res = await fetch(apiEndpoint, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: apiModel,
-        messages: messages,
-        temperature: 0.9,
-        max_tokens: 512
-      })
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error("AI API error:", errText);
-      await logEvent(env, "error", "AI API error", { error: errText, status: res.status });
-      return `⚠️ AI error: ${res.status} - ${errText}`;
-    }
-
-    const data = await res.json();
-    await logEvent(env, "info", "AI Response Raw", { data });
+  try {
+    await logEvent(env, "info", `Attempting Workers AI inference`, { messagesCount: messages.length, hasImage: !!base64Image });
     
-    return data.choices?.[0]?.message?.content || "⚠️ AI returned an empty response.";
+    let response;
+    if (base64Image) {
+      // Decode base64 to Uint8Array for Workers AI image parameter
+      let imageBytes;
+      try {
+        const base64Data = base64Image.split(",")[1] || base64Image;
+        const binaryString = atob(base64Data);
+        const len = binaryString.length;
+        imageBytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          imageBytes[i] = binaryString.charCodeAt(i);
+        }
+      } catch (err) {
+        console.error("Error decoding base64 image:", err);
+        return "⚠️ AI error: Failed to decode base64 image.";
+      }
+
+      // Vision model - prompt needs to be a string combining the text of messages
+      // We will use standard Llama 3 Chat template format instead of unstructured [user]/[system] text
+      // to make sure the model behaves as a conversational assistant and respects the system prompt rules.
+      let constructedPrompt = `<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n${systemPrompt}<|eot_id|>\n`;
+      
+      for (const msg of messages) {
+        if (msg.role === "system") continue;
+        constructedPrompt += `<|start_header_id|>${msg.role}<|end_header_id|>\n\n${msg.content}`;
+        // If it is the last user message, add table reading guidelines
+        if (msg === messages[messages.length - 1] && msg.role === "user") {
+          constructedPrompt += `\n\n(IMPORTANT INSTRUCTION: If there is a spreadsheet or table in this image, perform a precise column-by-column and row-by-row analysis. Pay very close attention to numeric columns such as 'Target' and 'Attainment' or percentages. Compare all agent records carefully. Double-check your numbers against the row labels/emails before responding to ensure your answer is perfectly accurate.)`;
+        }
+        constructedPrompt += `<|eot_id|>\n`;
+      }
+      constructedPrompt += `<|start_header_id|>assistant<|end_header_id|>\n\n`;
+
+      response = await aiBinding.run(
+        "@cf/meta/llama-3.2-11b-vision-instruct",
+        {
+          image: Array.from(imageBytes),
+          prompt: constructedPrompt,
+          max_tokens: 512
+        }
+      );
+    } else {
+      // Standard text generation
+      response = await aiBinding.run(
+        "@cf/meta/llama-3.1-8b-instruct-fp8",
+        {
+          messages: messages,
+          max_tokens: 512,
+          temperature: 0.9
+        }
+      );
+    }
+
+    if (!response || typeof response !== "object") {
+      await logEvent(env, "error", "Workers AI returned empty response", { response });
+      return "⚠️ Workers AI returned an empty response.";
+    }
+
+    const responseText = response.response || response.result || response.text || "";
+    await logEvent(env, "info", "Workers AI Response Successful", { length: responseText.length });
+    
+    return responseText || "⚠️ Workers AI returned an empty response text.";
   } catch (err) {
-    console.error(`AI API Fetch Error:`, err);
-    await logEvent(env, "error", "AI API Fetch Error", {
+    console.error(`Workers AI Fetch Error:`, err);
+    await logEvent(env, "error", "Workers AI Fetch Error", {
       error: err.toString(),
       message: err.message
     });
@@ -618,9 +920,29 @@ You MUST follow these rules:
   }
 }
 
+async function callGrokAI(env, messageText, convId = null, base64Image = null, senderName = null, threadId = null, onChunk = null) {
+  return await callWorkersAI(env, messageText, convId, base64Image, senderName, threadId, onChunk);
+}
+
+async function handleCommands(env, content, convId, senderName, targetThreadId) {
+  if (!content || typeof content !== 'string') return null;
+  const trimmed = content.trim();
+  if (trimmed === "/ping") {
+    return "Pong! 🏓 Gateway is online.";
+  }
+  if (trimmed === "/help") {
+    return "🤖 **Available Commands:**\n/ping - Check if bot is online\n/help - Show this help menu\n/summarize - Summarize the recent conversation history";
+  }
+  if (trimmed === "/summarize") {
+    const aiResponseText = await callGrokAI(env, "Please provide a concise summary of our recent conversation.", convId, null, senderName, targetThreadId);
+    return aiResponseText || "⚠️ Could not generate summary.";
+  }
+  return null;
+}
+
 // --- Event Handlers ---
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
@@ -1530,184 +1852,6 @@ export default {
       // 18.0 PUT /api/dashboard/messages/:id
       if (url.pathname.startsWith("/api/dashboard/messages/") && request.method === "PUT") {
         try {
-          const id = url.pathname.split("/").pop();
-          const { message_id, content, chat_type, target_id } = await request.json();
-          if (!id) throw new Error("Missing message DB ID");
-
-          await ensureD1Tables(env.DB);
-          const oldMsg = await env.DB.prepare("SELECT * FROM messages WHERE id = ?").bind(id).first();
-          if (!oldMsg) throw new Error("Message not found in DB");
-
-          await env.DB.prepare("UPDATE messages SET content = ? WHERE id = ?").bind(content, id).run();
-
-          const token = await getAccessToken(env);
-          if (token && message_id) {
-            let actualEmployeeCode = target_id;
-            if (chat_type === "private") {
-              actualEmployeeCode = await resolveEmployeeCode(env, target_id);
-            }
-            await fetch(`${SEATALK_API}/messaging/v2/update`, {
-              method: 'POST',
-              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                message_id,
-                message: { tag: "text", text: { format: 1, content } }
-              }),
-            });
-          }
-          return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json", ...corsHeaders } });
-        } catch (err) {
-          return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-        }
-      }
-
-      if (url.pathname === "/api/stream/init" && request.method === "POST") {
-        const body = await request.json();
-        const { target_id, chat_type, thread_id, message } = body;
-        const token = await getAccessToken(env);
-        if (!token) return new Response(JSON.stringify({ error: "Failed to get token" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-
-        try {
-          let endpoint = '';
-          let payload: any = { message };
-          if (chat_type === 'private') {
-            const employeeCode = await resolveEmployeeCode(env, target_id);
-            endpoint = `${SEATALK_API}/messaging/v2/single_chat/init_stream`;
-            payload.employee_code = employeeCode;
-          } else {
-            endpoint = `${SEATALK_API}/messaging/v2/group_chat/init_stream`;
-            payload.group_id = target_id;
-          }
-          if (thread_id) payload.thread_id = thread_id;
-
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          const data = await response.json();
-          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", ...corsHeaders } });
-        } catch (err: any) {
-          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-        }
-      }
-
-      if (url.pathname === "/api/stream/update" && request.method === "POST") {
-        const body = await request.json();
-        const { target_id, chat_type, stream_id, seq, finish, message } = body;
-        const token = await getAccessToken(env);
-        if (!token) return new Response(JSON.stringify({ error: "Failed to get token" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-
-        try {
-          let endpoint = '';
-          let payload: any = { stream_id, seq, finish, message };
-          if (chat_type === 'private') {
-            const employeeCode = await resolveEmployeeCode(env, target_id);
-            endpoint = `${SEATALK_API}/messaging/v2/single_chat/update_stream`;
-            payload.employee_code = employeeCode;
-          } else {
-            endpoint = `${SEATALK_API}/messaging/v2/group_chat/update_stream`;
-            payload.group_id = target_id;
-          }
-
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          const data = await response.json();
-          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", ...corsHeaders } });
-        } catch (err: any) {
-          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-        }
-      }
-
-      if (url.pathname === "/api/typing" && request.method === "POST") {
-        const body = await request.json();
-        const { target_id, chat_type, thread_id } = body;
-        const token = await getAccessToken(env);
-        if (!token) return new Response(JSON.stringify({ error: "Failed to get token" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-
-        try {
-          let endpoint = '';
-          let payload: any = {};
-          if (chat_type === 'private') {
-            const employeeCode = await resolveEmployeeCode(env, target_id);
-            endpoint = `${SEATALK_API}/messaging/v2/single_chat_typing`;
-            payload.employee_code = employeeCode;
-          } else {
-            endpoint = `${SEATALK_API}/messaging/v2/group_chat_typing`;
-            payload.group_id = target_id;
-          }
-          if (thread_id) payload.thread_id = thread_id;
-
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          const data = await response.json();
-          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", ...corsHeaders } });
-        } catch (err: any) {
-          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-        }
-      }
-
-      if (url.pathname === "/api/message" && request.method === "GET") {
-        const message_id = url.searchParams.get('message_id');
-        const token = await getAccessToken(env);
-        if (!token) return new Response(JSON.stringify({ error: "Failed to get token" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-
-        try {
-          const response = await fetch(`${SEATALK_API}/messaging/v2/get_message_by_message_id?message_id=${message_id}`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          const data = await response.json();
-          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", ...corsHeaders } });
-        } catch (err: any) {
-          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-        }
-      }
-
-      if (url.pathname === "/api/thread" && request.method === "GET") {
-        const employee_code = url.searchParams.get('employee_code');
-        const thread_id = url.searchParams.get('thread_id');
-        const token = await getAccessToken(env);
-        if (!token) return new Response(JSON.stringify({ error: "Failed to get token" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-
-        try {
-          const employeeCode = await resolveEmployeeCode(env, employee_code as string);
-          const response = await fetch(`${SEATALK_API}/messaging/v2/single_chat/get_thread_by_thread_id?employee_code=${employeeCode}&thread_id=${thread_id}&page_size=50`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          const data = await response.json();
-          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", ...corsHeaders } });
-        } catch (err: any) {
-          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-        }
-      }
-
-      if (url.pathname === "/api/update_message" && request.method === "POST") {
-        const body = await request.json();
-        const { message_id, message } = body;
-        const token = await getAccessToken(env);
-        if (!token) return new Response(JSON.stringify({ error: "Failed to get token" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-
-        try {
-          const response = await fetch(`${SEATALK_API}/messaging/v2/update`, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message_id, message }),
-          });
-          const data = await response.json();
-          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", ...corsHeaders } });
-        } catch (err: any) {
-          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
-        }
-      }
-
-      if (url.pathname.startsWith("/api/dashboard/messages/") && request.method === "PUT") {
-        try {
           await ensureD1Tables(env.DB);
           const pathParts = url.pathname.split("/");
           const messageId = pathParts[4];
@@ -1808,35 +1952,37 @@ export default {
         let codesArr = Array.from(empCodesToFetch);
 
         if (codesArr.length > 0) {
-          const profilePromises = codesArr.map(async (code) => {
+          const profiles = [];
+          for (let i = 0; i < codesArr.length; i++) {
+            profiles.push({ name: codesArr[i], email: "" });
+          }
+          
+          for (let i = 0; i < codesArr.length; i++) {
+            const code = codesArr[i];
+            const p = profiles[i];
             const convInfo = convInfoByCode.get(code);
-            let name = convInfo?.name || code;
-            let email = convInfo?.email || "";
             
-            // If email is empty, or name is just code, fetch the live profile
-            if (!email || name === code || name.startsWith("e_") || email.endsWith("@seatalk.biz")) {
-              try {
-                const profile = await getEmployeeProfile(env, code);
-                if (profile.name && profile.name !== code) {
-                  name = profile.name;
-                }
-                if (profile.email) {
-                  email = profile.email;
-                }
-              } catch (err) {
-                console.error("Error fetching live profile for " + code, err);
-              }
+            let email = p.email;
+            if (!email || email.endsWith("@seatalk.biz")) {
+               if (convInfo?.email && !convInfo.email.endsWith("@seatalk.biz")) {
+                 email = convInfo.email;
+               }
             }
+            if (!email) email = "";
             
-            return {
+            let name = p.name;
+            if (convInfo?.name && (!name || name === code || name.startsWith("e_"))) {
+               name = convInfo.name;
+            }
+            if (!name) name = code;
+
+            uniqueEmp.push({
               employee_code: code,
               email: email,
               name: name,
               type: "private",
-            };
-          });
-          const results = await Promise.all(profilePromises);
-          uniqueEmp.push(...results);
+            });
+          }
         }
 
         return new Response(
@@ -2036,7 +2182,26 @@ export default {
         const eventType = body.event_type;
         const event = body.event || {};
 
-        try {
+        // 1. Deduplication check to prevent duplicate/retry execution of the same message event
+        if (event.message_id) {
+          if (trackMessageId(event.message_id)) {
+            await logEvent(env, "info", "Ignored duplicate webhook message (tracked in memory)", { message_id: event.message_id });
+            return new Response(JSON.stringify({ code: 0 }), {
+              headers: { "Content-Type": "application/json", ...corsHeaders }
+            });
+          }
+          
+          const isDup = await isDuplicateMessage(env, event.message_id);
+          if (isDup) {
+            await logEvent(env, "info", "Ignored duplicate webhook message (found in database)", { message_id: event.message_id });
+            return new Response(JSON.stringify({ code: 0 }), {
+              headers: { "Content-Type": "application/json", ...corsHeaders }
+            });
+          }
+        }
+
+        const handleEventAsync = async () => {
+          try {
           if (eventType === "message_from_bot_subscriber") {
             // Prevent Bot Loop / Self-reply: Ignore bot messages
             const isBotSender = 
@@ -2110,8 +2275,23 @@ export default {
                 raw_message: JSON.stringify(event.message || {})
               });
 
-              const reply = await findMatchingRule(env, content, senderEmail, event.employee_code, "private");
-              if (reply) {
+              const targetThreadId = event.message?.thread_id || event.message_id;
+              const commandResponse = await handleCommands(env, content, convId, senderName, targetThreadId);
+
+              if (commandResponse) {
+                await sendPrivateMessage(env, event.employee_code, commandResponse, undefined, targetThreadId);
+                await saveMessage(env, convId, {
+                  sender: "bot",
+                  sender_name: "Bot",
+                  content: commandResponse,
+                  employee_code: event.employee_code,
+                  is_auto_reply: true,
+                  thread_id: targetThreadId,
+                  tag: "text"
+                });
+              } else {
+                const reply = await findMatchingRule(env, content, senderEmail, event.employee_code, "private");
+                if (reply) {
                 await logEvent(env, "info", "Sending auto-reply", {
                   employeeCode: event.employee_code,
                   reply,
@@ -2136,16 +2316,21 @@ export default {
                 });
                 
                 let base64Img = null;
+                const targetThreadId = event.message?.thread_id || event.message_id;
                 if (event.message?.quoted_message_id) {
-                  base64Img = await getQuotedImageBase64(env, event.message.quoted_message_id);
+                  base64Img = await getQuotedImageBase64(env, event.message.quoted_message_id, null, event.message?.thread_id);
                 } else if (tag === "image" && event.message?.image) {
                   base64Img = await getMessageImageBase64(env, event.message.image);
                 }
                 
-                const aiResponseText = await callGrokAI(env, content, convId, base64Img, senderName);
+                let updater = await initSeaTalkStream(env, "private", event.employee_code, targetThreadId, undefined);
+                let onChunk = updater ? async (text, isFinal) => await updater(text, isFinal) : null;
+                
+                const aiResponseText = await callGrokAI(env, content, convId, base64Img, senderName, targetThreadId, onChunk);
                 if (aiResponseText) {
-                  const targetThreadId = event.message?.thread_id || event.message_id;
-                  await sendPrivateMessage(env, event.employee_code, aiResponseText, undefined, targetThreadId);
+                  if (!onChunk) {
+                    await sendPrivateMessage(env, event.employee_code, aiResponseText, undefined, targetThreadId);
+                  }
                   await saveMessage(env, convId, {
                     sender: "bot",
                     sender_name: "AI Assistant",
@@ -2157,11 +2342,11 @@ export default {
                   });
                 }
               }
+              }
             }
           } else if (
             eventType === "new_mentioned_message_received_from_group_chat" ||
             eventType === "new_message_received_from_group_chat" ||
-            eventType === "new_message_received_from_thread" ||
             (event.group_id && (event.message?.text?.content || event.message?.text?.plain_text))
           ) {
             // Prevent Bot Loop / Self-reply: Ignore bot messages
@@ -2170,7 +2355,6 @@ export default {
               event.message?.sender_type === "bot" ||
               event.message?.is_bot === true ||
               event.sender_employee_info?.is_bot === true ||
-              event.message?.sender?.employee_code === "" || // Bot sender in thread has empty employee_code
               (event.message?.sender_id && event.message?.sender_id === env.SEATALK_APP_ID);
 
             if (isBotSender) {
@@ -2198,26 +2382,18 @@ export default {
             if (content) {
               let senderName =
                 event.sender_employee_info?.en_name ||
-                event.sender_employee_info?.name ||
-                event.message?.sender?.username;
-              let senderEmail = event.sender_employee_info?.email || event.message?.sender?.email || "";
-              let actualEmployeeCode = event.sender_employee_info?.employee_code || event.message?.sender?.employee_code || event.employee_code || "";
-              
-              if ((!senderEmail || !actualEmployeeCode) && event.message_id) {
-                const senderInfo = await getMessageSenderInfo(env, event.message_id);
-                if (senderInfo) {
-                  if (senderInfo.employee_code) actualEmployeeCode = senderInfo.employee_code;
-                  if (senderInfo.email) senderEmail = senderInfo.email;
-                }
-              }
-
+                event.sender_employee_info?.name;
+              let senderEmail = event.sender_employee_info?.email || "";
               if (!senderName || !senderEmail) {
                 const profile = await getEmployeeProfile(
                   env,
-                  actualEmployeeCode,
+                  event.employee_code,
                 );
                 if (!senderName) senderName = profile.name;
                 if (!senderEmail) senderEmail = profile.email;
+              }
+              if (senderEmail) {
+                senderName = `${senderName} (${senderEmail})`;
               }
               const convId = await ensureConversation(env, {
                 chat_type: "group",
@@ -2231,7 +2407,7 @@ export default {
                 sender: "user",
                 sender_name: senderName,
                 content,
-                employee_code: actualEmployeeCode,
+                employee_code: event.employee_code,
                 group_id: event.group_id,
                 message_id: event.message_id,
                 thread_id: event.message?.thread_id || "",
@@ -2240,8 +2416,23 @@ export default {
                 raw_message: JSON.stringify(event.message || {})
               });
 
-              const reply = await findMatchingRule(env, content, senderEmail, actualEmployeeCode, "group");
-              if (reply) {
+              const targetThreadId = event.message?.thread_id || event.message_id;
+              const commandResponse = await handleCommands(env, content, convId, senderName, targetThreadId);
+
+              if (commandResponse) {
+                await sendGroupMessage(env, event.group_id, commandResponse, targetThreadId, undefined);
+                await saveMessage(env, convId, {
+                  sender: "bot",
+                  sender_name: "Bot",
+                  content: commandResponse,
+                  group_id: event.group_id,
+                  thread_id: targetThreadId,
+                  is_auto_reply: true,
+                  tag: "text"
+                });
+              } else {
+                const reply = await findMatchingRule(env, content, senderEmail, event.employee_code, "group");
+                if (reply) {
                 await logEvent(env, "info", "Sending group auto-reply", {
                   groupId: event.group_id,
                   reply,
@@ -2272,16 +2463,21 @@ export default {
                 });
                 
                 let base64Img = null;
+                const targetThreadId = event.message?.thread_id || event.message_id;
                 if (event.message?.quoted_message_id) {
-                  base64Img = await getQuotedImageBase64(env, event.message.quoted_message_id);
+                  base64Img = await getQuotedImageBase64(env, event.message.quoted_message_id, event.group_id, event.message?.thread_id);
                 } else if (tag === "image" && event.message?.image) {
                   base64Img = await getMessageImageBase64(env, event.message.image);
                 }
                 
-                const aiResponseText = await callGrokAI(env, content, convId, base64Img, senderName);
+                let updater = await initSeaTalkStream(env, "group", event.group_id, targetThreadId, undefined);
+                let onChunk = updater ? async (text, isFinal) => await updater(text, isFinal) : null;
+                
+                const aiResponseText = await callGrokAI(env, content, convId, base64Img, senderName, targetThreadId, onChunk);
                 if (aiResponseText) {
-                  const targetThreadId = event.message?.thread_id || event.message_id;
-                  await sendGroupMessage(env, event.group_id, aiResponseText, targetThreadId, undefined);
+                  if (!onChunk) {
+                    await sendGroupMessage(env, event.group_id, aiResponseText, targetThreadId, undefined);
+                  }
                   await saveMessage(env, convId, {
                     sender: "bot",
                     sender_name: "AI Assistant",
@@ -2292,6 +2488,7 @@ export default {
                     tag: "text"
                   });
                 }
+              }
               }
             }
           } else if (eventType === "bot_added_to_group_chat") {
@@ -2361,7 +2558,7 @@ export default {
               const existingAction = await firestoreRequest(env, "GET", `/message_actions/${actionDocId}`);
               if (existingAction && existingAction.name) {
                  const reply = "⚠️ You have already responded to this message.";
-                 const targetThreadId = event.thread_id || messageId;
+                 const targetThreadId = messageId; // we can refine target thread if needed
                  if (groupId) {
                     await sendGroupMessage(env, groupId, reply, targetThreadId);
                  } else {
@@ -2499,7 +2696,7 @@ export default {
             // Try to find original message to get sim_response and thread_id
             const originalDoc = await getMessageByMessageId(env, messageId);
             let simResponse = null;
-            let targetThreadId = event.thread_id || messageId;
+            let targetThreadId = messageId;
 
             if (originalDoc && originalDoc.fields) {
               if (originalDoc.fields.thread_id && originalDoc.fields.thread_id.stringValue) {
@@ -2598,6 +2795,14 @@ export default {
             error: err.toString(),
             stack: err.stack,
           });
+        }
+        };
+
+        // 2. Run event handler in background and respond with HTTP 200 immediately to prevent SeaTalk timeouts and retries
+        if (ctx && typeof ctx.waitUntil === "function") {
+          ctx.waitUntil(handleEventAsync());
+        } else {
+          await handleEventAsync();
         }
 
         return new Response(JSON.stringify({ code: 0 }), {

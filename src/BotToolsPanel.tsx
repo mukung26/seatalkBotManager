@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 export function BotToolsPanel() {
   const [activeTab, setActiveTab] = useState("employee");
 
-  
+  // Output logging
   const [logs, setLogs] = useState<{ time: string; api: string; response: string; error?: boolean }[]>([]);
 
   const addLog = (api: string, response: any, error = false) => {
@@ -28,35 +28,9 @@ export function BotToolsPanel() {
     }, ...prev]);
   };
 
-  const callApi = async (apiName: string, endpoint: string, method: string, payload?: any, queryParams?: any) => {
-    toast.info(`Calling API: ${apiName}`);
-    try {
-      let url = endpoint;
-      if (queryParams) {
-        url += '?' + new URLSearchParams(queryParams).toString();
-      }
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: method === 'POST' ? JSON.stringify(payload) : undefined
-      });
-      const data = await res.json();
-      if (data.error || data.code !== 0) {
-        toast.error(`${apiName} failed.`);
-        addLog(apiName, data, true);
-      } else {
-        toast.success(`${apiName} Executed successfully.`);
-        addLog(apiName, data);
-      }
-    } catch (e: any) {
-      toast.error(`${apiName} error: ${e.message}`);
-      addLog(apiName, { error: e.message }, true);
-    }
-  };
-
   const simulateApiCall = async (apiName: string, expectedOutput: any, payload?: any) => {
     toast.info(`Calling API: ${apiName}`);
-    await new Promise(r => setTimeout(r, 600)); 
+    await new Promise(r => setTimeout(r, 600)); // Simulate network latency
 
     if (!payload?.valid && payload?.valid !== false) {
       toast.success(`${apiName} Executed successfully.`);
@@ -108,7 +82,6 @@ export function BotToolsPanel() {
                 action={() => simulateApiCall("Get Employee Code with Email", { employee_code: "EMP-001" })}
                 buttonLabel="Get Code"
                  inputs={[{ label: "Email Address", placeholder: "employee@seatalk.biz" }]}
-
               />
                <ApiSection 
                 title="Get Employee Status" 
@@ -116,7 +89,6 @@ export function BotToolsPanel() {
                 action={() => simulateApiCall("Get Employee Status", { status: "Active", joined_at: "2024-01-01" })}
                 buttonLabel="Check Status"
                  inputs={[{ label: "Employee Code / ID", placeholder: "EMP-001" }]}
-
               />
                <ApiSection 
                 title="Check Employee Existence" 
@@ -124,7 +96,6 @@ export function BotToolsPanel() {
                 action={() => simulateApiCall("Check Employee Existence", { exists: true, user_id: "ST_ID_1020" })}
                 buttonLabel="Verify Existence"
                  inputs={[{ label: "Query (Email or Phone)", placeholder: "..." }]}
-
               />
                <ApiSection 
                 title="Get User Language Preference" 
@@ -132,7 +103,6 @@ export function BotToolsPanel() {
                 action={() => simulateApiCall("Get User Language Preference", { language_code: "en-US" })}
                 buttonLabel="Get Preference"
                  inputs={[{ label: "SeaTalk User ID", placeholder: "uid_..." }]}
-
               />
               </div>
             )}
@@ -148,7 +118,6 @@ export function BotToolsPanel() {
                    { label: "Group Name", placeholder: "Project Delta" },
                    { label: "Initial Members (Employee Codes, comma sep)", placeholder: "EMP-001, EMP-002" }
                  ]}
-
               />
               <ApiSection 
                 title="Add / Remove Group Members" 
@@ -159,7 +128,6 @@ export function BotToolsPanel() {
                    { label: "Group ID", placeholder: "GRP_..." },
                    { label: "Member IDs", placeholder: "EMP-003" }
                  ]}
-
               />
               <ApiSection 
                 title="Get Group Info" 
@@ -167,7 +135,6 @@ export function BotToolsPanel() {
                 action={() => simulateApiCall("Get Group Info", { group_name: "Project Delta", member_count: 5, bot_is_admin: false })}
                 buttonLabel="Fetch Info"
                  inputs={[{ label: "Group ID", placeholder: "GRP_..." }]}
-
               />
               <ApiSection 
                 title="Get Joined Group Chat List" 
@@ -179,31 +146,28 @@ export function BotToolsPanel() {
                   ]
                 })}
                 buttonLabel="List Groups"
-
               />
               </div>
             )}
+
             {activeTab === 'bot' && (
               <div className="space-y-4">
               <ApiSection 
                 title="Update Message" 
                 desc="Update an interactive message sent previously using its message_id."
-                action={(v: any) => callApi("Update Message", "/api/update_message", "POST", { message_id: v["Message ID"], message: JSON.parse(v["New JSON Content"] || '{}') })}
-                buttonLabel="Apply Update" 
-                inputs={[
-                  { label: "Message ID", placeholder: "msg_..." },
-                  { label: "New JSON Content", placeholder: '{"interactive_message": {...}}' }
-                ]}
+                action={() => simulateApiCall("Update Message", { success: true, updated_at: new Date().toISOString() })}
+                buttonLabel="Apply Update"
+                 inputs={[
+                   { label: "Message ID", placeholder: "msg_..." },
+                   { label: "New JSON Content", placeholder: "{...}" }
+                 ]}
               />
               <ApiSection 
                 title="Set Typing Status" 
                 desc="Set the 'Typing...' indicator in a private or group chat."
-                action={(v: any) => callApi("Set Typing Status", "/api/typing", "POST", { target_id: v["Target ID (Private or Group)"], chat_type: v["Target ID (Private or Group)"]?.startsWith('GRP') ? 'group' : 'private', thread_id: v["Thread ID (Optional)"] })}
-                buttonLabel="Send Typing Event" 
-                inputs={[
-                  { label: "Target ID (Private or Group)", placeholder: "GRP_... or uid_..." },
-                  { label: "Thread ID (Optional)", placeholder: "..." }
-                ]}
+                action={() => simulateApiCall("Set Typing Status", { success: true })}
+                buttonLabel="Send Typing Event"
+                 inputs={[{ label: "Target ID (Private or Group)", placeholder: "GRP_... or uid_..." }]}
               />
                <ApiSection 
                 title="Get Bot Subscriber List" 
@@ -217,43 +181,14 @@ export function BotToolsPanel() {
                <ApiSection 
                 title="Get Message by Message ID" 
                 desc="Retrieve exact message details and content from the API."
-                action={(v: any) => callApi("Get Message", "/api/message", "GET", undefined, { message_id: v["Message ID"] })}
-                buttonLabel="Retrieve Message" 
-                inputs={[{ label: "Message ID", placeholder: "msg_abc123" }]}
-              />
-              <ApiSection 
-                title="Get Thread by Thread ID" 
-                desc="Retrieve thread messages."
-                action={(v: any) => callApi("Get Thread", "/api/thread", "GET", undefined, { employee_code: v["Employee Code"], thread_id: v["Thread ID"] })}
-                buttonLabel="Retrieve Thread" 
-                inputs={[
-                  { label: "Employee Code", placeholder: "EMP-001" },
-                  { label: "Thread ID", placeholder: "msg_abc123" }
-                ]}
-              />
-              <ApiSection 
-                title="Init Stream Message" 
-                desc="Sends a placeholder message to the chat and returns a stream_id."
-                action={(v: any) => callApi("Init Stream", "/api/stream/init", "POST", { target_id: v["Target ID (Private or Group)"], chat_type: v["Target ID (Private or Group)"]?.startsWith('GRP') ? 'group' : 'private', thread_id: v["Thread ID (Optional)"], message: JSON.parse(v["Message Content"] || '{"tag":"text","text":{"format":1,"content":"Thinking..."}}') })}
-                buttonLabel="Init Stream" 
-                inputs={[
-                  { label: "Target ID (Private or Group)", placeholder: "GRP_... or uid_..." },
-                  { label: "Thread ID (Optional)", placeholder: "..." },
-                  { label: "Message Content", placeholder: '{"tag":"text","text":{"format":1,"content":"Thinking..."}}' }
-                ]}
-              />
-              <ApiSection 
-                title="Update Stream Message" 
-                desc="Pushes content to an active stream."
-                action={(v: any) => callApi("Update Stream", "/api/stream/update", "POST", { target_id: v["Target ID"], chat_type: v["Target ID"]?.startsWith('GRP') ? 'group' : 'private', stream_id: v["Stream ID"], seq: parseInt(v["Seq"]||'1'), finish: v["Finish"] === 'true', message: JSON.parse(v["Message Content"] || '{"text":{"format":1,"content":"Updated..."}}') })}
-                buttonLabel="Update Stream" 
-                inputs={[
-                  { label: "Target ID", placeholder: "GRP_... or uid_..." },
-                  { label: "Stream ID", placeholder: "stream_..." },
-                  { label: "Seq", placeholder: "1, 2, 3..." },
-                  { label: "Finish", placeholder: "true or false" },
-                  { label: "Message Content", placeholder: '{"text":{"format":1,"content":"Updated content"}}' }
-                ]}
+                action={() => simulateApiCall("Get Message", {
+                  message_id: "msg_abc123",
+                  sender: "EMP-001",
+                  content: { text: "Hello from SeaTalk!" },
+                  timestamp: Date.now()
+                })}
+                buttonLabel="Retrieve Message"
+                 inputs={[{ label: "Message ID", placeholder: "msg_abc123" }]}
               />
               </div>
             )}
@@ -299,10 +234,8 @@ export function BotToolsPanel() {
   );
 }
 
-
+// Reusable component
 function ApiSection({ title, desc, action, buttonLabel, inputs = [] }: any) {
-  const [vals, setVals] = useState<Record<string, string>>({});
-  
   return (
     <Card className="bg-[#111] border-[#222] rounded-xl overflow-hidden shadow-none">
       <CardHeader className="p-4 pb-3 border-b border-[#222] bg-[#161616]">
@@ -313,14 +246,10 @@ function ApiSection({ title, desc, action, buttonLabel, inputs = [] }: any) {
         {inputs.map((inp: any, idx: number) => (
           <div key={idx} className="space-y-1.5">
             <label className="text-[10px] uppercase font-bold tracking-wider text-[#666]">{inp.label}</label>
-            <Input 
-              className="h-8 bg-[#000] border-[#333] text-xs text-white placeholder:text-[#555] rounded-md" 
-              placeholder={inp.placeholder} 
-              value={vals[inp.label] || ''}
-            />
+            <Input className="h-8 bg-[#000] border-[#333] text-xs text-white placeholder:text-[#555] rounded-md" placeholder={inp.placeholder} />
           </div>
         ))}
-        <Button onClick={() => action(vals)} className="w-full text-xs h-8 bg-blue-600 hover:bg-blue-700 text-white rounded-md mt-2 shadow-sm font-semibold tracking-wide">
+        <Button onClick={action} className="w-full text-xs h-8 bg-blue-600 hover:bg-blue-700 text-white rounded-md mt-2 shadow-sm font-semibold tracking-wide">
           {buttonLabel}
         </Button>
       </CardContent>
@@ -328,7 +257,7 @@ function ApiSection({ title, desc, action, buttonLabel, inputs = [] }: any) {
   );
 }
 
-
+// Dummy icon
 function Activity(props: any) {
   return (
     <svg
