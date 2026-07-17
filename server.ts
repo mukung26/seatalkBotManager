@@ -198,6 +198,35 @@ function processMessageMentions(messageObj: any) {
   return messageData;
 }
 
+const profileCache = new Map<string, { name: string, email: string }>();
+
+async function getEmployeeProfile(employeeCode: string) {
+  if (profileCache.has(employeeCode)) {
+    return profileCache.get(employeeCode)!;
+  }
+  const result = { name: employeeCode, email: "" };
+  try {
+    const token = await getAccessToken();
+    if (token) {
+      const res = await fetch(`${SEATALK_API}/contacts/v2/profile?employee_code=${employeeCode}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json() as any;
+        if (data.code === 0 && data.employees && data.employees.length > 0) {
+          const emp = data.employees[0];
+          result.name = emp.en_name || emp.name || employeeCode;
+          result.email = emp.company_email || emp.email || "";
+          profileCache.set(employeeCode, result);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Error fetching employee profile:", e);
+  }
+  return result;
+}
+
 
 async function resolveEmployeeCode(targetId: string) {
   if (!targetId.includes("@")) {
@@ -354,21 +383,41 @@ app.post('/api/seatalk/webhook', async (req, res) => {
     if (eventType === 'message_from_bot_subscriber') {
        const content = event.message?.text?.content;
        if (content) {
-         const conv = ensureConversation({ chat_type: 'private', employee_code: event.employee_code, user_name: event.sender_employee_info?.en_name || event.employee_code, user_email: event.sender_employee_info?.email || '' });
-         saveMessage((conv as any).id, { sender: 'user', sender_name: event.sender_employee_info?.en_name || event.employee_code, content, employee_code: event.employee_code, message_id: event.message_id });
+         let senderName = event.sender_employee_info?.en_name || event.sender_employee_info?.name;
+         let senderEmail = event.sender_employee_info?.email || '';
+         const empCode = event.sender_employee_info?.employee_code || event.employee_code || '';
+         if (empCode && (!senderName || !senderEmail)) {
+           const profile = await getEmployeeProfile(empCode);
+           if (!senderName) senderName = profile.name;
+           if (!senderEmail) senderEmail = profile.email;
+         }
+         if (!senderName) senderName = empCode || 'User';
+
+         const conv = ensureConversation({ chat_type: 'private', employee_code: empCode, user_name: senderName, user_email: senderEmail });
+         saveMessage((conv as any).id, { sender: 'user', sender_name: senderName, content, employee_code: empCode, message_id: event.message_id });
          
          const rep = getAutoReply(content);
          if (rep) {
            const { text: replyText, messageObj } = parseReplyMessage(rep);
-           await sendPrivateMessage(event.employee_code, replyText, messageObj);
-           saveMessage((conv as any).id, { sender: 'bot', sender_name: 'Bot', content: replyText, employee_code: event.employee_code, is_auto_reply: true });
+           await sendPrivateMessage(empCode, replyText, messageObj);
+           saveMessage((conv as any).id, { sender: 'bot', sender_name: 'Bot', content: replyText, employee_code: empCode, is_auto_reply: true });
          }
        }
     } else if (eventType === 'new_mentioned_message_received_from_group_chat' || eventType === 'new_message_received_from_group_chat' || (event.group_id && (event.message?.text?.content || event.message?.text?.plain_text))) {
        const content = event.message?.text?.content || event.message?.text?.plain_text;
        if (content) {
+         let senderName = event.sender_employee_info?.en_name || event.sender_employee_info?.name;
+         let senderEmail = event.sender_employee_info?.email || '';
+         const empCode = event.sender_employee_info?.employee_code || event.employee_code || '';
+         if (empCode && (!senderName || !senderEmail)) {
+           const profile = await getEmployeeProfile(empCode);
+           if (!senderName) senderName = profile.name;
+           if (!senderEmail) senderEmail = profile.email;
+         }
+         if (!senderName) senderName = empCode || 'User';
+
          const conv = ensureConversation({ chat_type: 'group', group_id: event.group_id, group_name: event.group_name || event.group_id });
-         saveMessage((conv as any).id, { sender: 'user', sender_name: event.sender_employee_info?.en_name || event.employee_code || 'User', content, employee_code: event.employee_code, group_id: event.group_id, message_id: event.message_id });
+         saveMessage((conv as any).id, { sender: 'user', sender_name: senderName, content, employee_code: empCode, group_id: event.group_id, message_id: event.message_id });
          
          const rep = getAutoReply(content);
          if (rep) {
@@ -641,6 +690,7 @@ app.get('/api/dashboard/contacts', async (req, res) => {
     const token = await getAccessToken();
     let groups = [];
     let empCodesToFetch = new Set<string>();
+    let groupUserEmails = new Map<string, string>();
 
     if (token) {
       try {
@@ -664,7 +714,12 @@ app.get('/api/dashboard/contacts', async (req, res) => {
                 });
                 if (infoData.group.group_user_list) {
                   for (const u of infoData.group.group_user_list) {
-                    if (u.employee_code) empCodesToFetch.add(u.employee_code);
+                    if (u.employee_code) {
+                      empCodesToFetch.add(u.employee_code);
+                      if (u.email) {
+                        groupUserEmails.set(u.employee_code, u.email);
+                      }
+                    }
                   }
                 }
               }
@@ -696,19 +751,29 @@ app.get('/api/dashboard/contacts', async (req, res) => {
     }
 
     // Format employee profiles
-    const uniqueEmp = [];
     let codesArr = Array.from(empCodesToFetch);
-    for (const code of codesArr) {
+    const profilePromises = codesArr.map(async (code) => {
       const convInfo = convInfoByCode.get(code);
-      let email = convInfo?.email || '';
-      let name = convInfo?.name || code;
-      uniqueEmp.push({
+      let email = convInfo?.email || groupUserEmails.get(code) || '';
+      let name = convInfo?.name || '';
+
+      if (!name || name === code || !email) {
+        const profile = await getEmployeeProfile(code);
+        if (!name || name === code) name = profile.name;
+        if (!email) email = profile.email;
+      }
+
+      if (!name) name = code;
+
+      return {
         employee_code: code,
         email: email,
         name: name,
         type: 'private'
-      });
-    }
+      };
+    });
+
+    const uniqueEmp = await Promise.all(profilePromises);
 
     res.json({ success: true, groups, employees: uniqueEmp });
   } catch (err: any) {
