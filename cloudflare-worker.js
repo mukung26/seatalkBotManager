@@ -569,13 +569,15 @@ async function initSeaTalkStream(env, chatType, targetId, threadId = null, quote
     let resolvedCode = targetId;
     if (chatType === "group") {
       body.group_id = targetId;
-      if (threadId) body.thread_id = threadId;
+      if (threadId) body.message.thread_id = threadId;
       if (quotedMessageId) body.message.quoted_message_id = quotedMessageId;
     } else {
       resolvedCode = await resolveEmployeeCode(env, targetId);
       body.employee_code = resolvedCode;
       if (threadId) body.message.thread_id = threadId;
     }
+
+    await logEvent(env, "info", "Initializing SeaTalk stream", { chatType, targetId, threadId, quotedMessageId, body });
 
     const res = await fetch(endpoint, {
       method: "POST",
@@ -585,6 +587,7 @@ async function initSeaTalkStream(env, chatType, targetId, threadId = null, quote
     
     if (res.ok) {
       const data = await res.json();
+      await logEvent(env, "info", "SeaTalk init_stream response status", { code: data.code, stream_id: data.stream_id, message: data.message });
       if (data.code === 0 && data.stream_id) {
         const streamId = data.stream_id;
         let seq = 1;
@@ -609,16 +612,36 @@ async function initSeaTalkStream(env, chatType, targetId, threadId = null, quote
           if (chatType === "group") updateBody.group_id = targetId;
           else updateBody.employee_code = resolvedCode;
 
-          await fetch(updateEndpoint, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-            body: JSON.stringify(updateBody)
-          });
+          try {
+            const updateRes = await fetch(updateEndpoint, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+              body: JSON.stringify(updateBody)
+            });
+            if (updateRes.ok) {
+              const updateData = await updateRes.json();
+              if (updateData.code !== 0) {
+                console.error("update_stream API error:", updateData);
+                await logEvent(env, "error", "update_stream API error", { updateData, updateBody });
+              }
+            } else {
+              const errText = await updateRes.text();
+              console.error("update_stream network error:", updateRes.status, errText);
+              await logEvent(env, "error", "update_stream network error", { status: updateRes.status, errText });
+            }
+          } catch (err) {
+            console.error("update_stream exception:", err);
+            await logEvent(env, "error", "update_stream exception", { error: err.toString() });
+          }
         };
       }
+    } else {
+      const errText = await res.text();
+      await logEvent(env, "error", "SeaTalk init_stream HTTP error", { status: res.status, error: errText });
     }
   } catch (e) {
     console.error("Failed to init stream:", e);
+    await logEvent(env, "error", "Failed to init stream exception", { error: e.toString() });
   }
   return null;
 }
@@ -797,35 +820,41 @@ You MUST follow these rules:
       
       if (response.ok) {
         if (onChunk) {
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder("utf-8");
-          let buffer = "";
-          let fullText = "";
+          try {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let buffer = "";
+            let fullText = "";
 
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop();
 
-            for (const line of lines) {
-              if (line.startsWith("data: ")) {
-                const dataStr = line.slice(6);
-                if (dataStr === "[DONE]") continue;
-                try {
-                  const data = JSON.parse(dataStr);
-                  const chunk = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-                  if (chunk) {
-                    fullText += chunk;
-                    await onChunk(fullText, false);
-                  }
-                } catch(e) {}
+              for (let line of lines) {
+                line = line.trim();
+                if (line.startsWith("data: ")) {
+                  const dataStr = line.slice(6).trim();
+                  if (dataStr === "[DONE]") continue;
+                  try {
+                    const data = JSON.parse(dataStr);
+                    const chunk = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                    if (chunk) {
+                      fullText += chunk;
+                      await onChunk(fullText, false);
+                    }
+                  } catch(e) {}
+                }
               }
             }
+            await onChunk(fullText, true);
+            return fullText;
+          } catch (streamErr) {
+            console.error("Error reading Gemini SSE stream:", streamErr);
+            await logEvent(env, "error", "Gemini SSE Stream Error", { error: streamErr.toString() });
           }
-          await onChunk(fullText, true);
-          return fullText;
         } else {
           const data = await response.json();
           const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -903,12 +932,17 @@ You MUST follow these rules:
 
     if (!response || typeof response !== "object") {
       await logEvent(env, "error", "Workers AI returned empty response", { response });
-      return "⚠️ Workers AI returned an empty response.";
+      const errorMsg = "⚠️ Workers AI returned an empty response.";
+      if (onChunk) await onChunk(errorMsg, true);
+      return errorMsg;
     }
 
     const responseText = response.response || response.result || response.text || "";
     await logEvent(env, "info", "Workers AI Response Successful", { length: responseText.length });
     
+    if (onChunk && responseText) {
+      await onChunk(responseText, true);
+    }
     return responseText || "⚠️ Workers AI returned an empty response text.";
   } catch (err) {
     console.error(`Workers AI Fetch Error:`, err);
@@ -916,7 +950,9 @@ You MUST follow these rules:
       error: err.toString(),
       message: err.message
     });
-    return `⚠️ AI Assistant error: Failed to generate response (${err.message}).`;
+    const errorMsg = `⚠️ AI Assistant error: Failed to generate response (${err.message}).`;
+    if (onChunk) await onChunk(errorMsg, true);
+    return errorMsg;
   }
 }
 
@@ -2380,6 +2416,7 @@ export default {
             else if (tag === "interactive_message") content = "[Interactive Message]";
             else content = "[Unsupported Message]";
             if (content) {
+              const empCode = event.sender_employee_info?.employee_code || event.employee_code || "";
               let senderName =
                 event.sender_employee_info?.en_name ||
                 event.sender_employee_info?.name;
@@ -2387,7 +2424,7 @@ export default {
               if (!senderName || !senderEmail) {
                 const profile = await getEmployeeProfile(
                   env,
-                  event.employee_code,
+                  empCode,
                 );
                 if (!senderName) senderName = profile.name;
                 if (!senderEmail) senderEmail = profile.email;
@@ -2407,7 +2444,7 @@ export default {
                 sender: "user",
                 sender_name: senderName,
                 content,
-                employee_code: event.employee_code,
+                employee_code: empCode,
                 group_id: event.group_id,
                 message_id: event.message_id,
                 thread_id: event.message?.thread_id || "",
@@ -2431,7 +2468,7 @@ export default {
                   tag: "text"
                 });
               } else {
-                const reply = await findMatchingRule(env, content, senderEmail, event.employee_code, "group");
+                const reply = await findMatchingRule(env, content, senderEmail, empCode, "group");
                 if (reply) {
                 await logEvent(env, "info", "Sending group auto-reply", {
                   groupId: event.group_id,
@@ -2470,7 +2507,7 @@ export default {
                   base64Img = await getMessageImageBase64(env, event.message.image);
                 }
                 
-                let updater = await initSeaTalkStream(env, "group", event.group_id, targetThreadId, undefined);
+                let updater = await initSeaTalkStream(env, "group", event.group_id, targetThreadId, event.message?.quoted_message_id);
                 let onChunk = updater ? async (text, isFinal) => await updater(text, isFinal) : null;
                 
                 const aiResponseText = await callGrokAI(env, content, convId, base64Img, senderName, targetThreadId, onChunk);
