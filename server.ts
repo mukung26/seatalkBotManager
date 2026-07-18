@@ -227,6 +227,31 @@ async function getEmployeeProfile(employeeCode: string) {
   return result;
 }
 
+const groupInfoCache = new Map<string, any>();
+
+async function getGroupInfo(groupId: string): Promise<any> {
+  if (groupInfoCache.has(groupId)) {
+    return groupInfoCache.get(groupId);
+  }
+  const token = await getAccessToken();
+  if (!token) return null;
+  try {
+    const res = await fetch(`${SEATALK_API}/messaging/v2/group_chat/info?group_id=${groupId}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok) {
+      const data = await res.json() as any;
+      if (data.code === 0 && data.group) {
+        groupInfoCache.set(groupId, data.group);
+        return data.group;
+      }
+    }
+  } catch (err) {
+    console.error(`Error fetching group info for ${groupId}:`, err);
+  }
+  return null;
+}
+
 
 async function resolveEmployeeCode(targetId: string) {
   if (!targetId.includes("@")) {
@@ -392,6 +417,9 @@ app.post('/api/seatalk/webhook', async (req, res) => {
            if (!senderEmail) senderEmail = profile.email;
          }
          if (!senderName) senderName = empCode || 'User';
+         if (senderEmail) {
+           senderName = `${senderName} (${senderEmail})`;
+         }
 
          const conv = ensureConversation({ chat_type: 'private', employee_code: empCode, user_name: senderName, user_email: senderEmail });
          saveMessage((conv as any).id, { sender: 'user', sender_name: senderName, content, employee_code: empCode, message_id: event.message_id });
@@ -408,13 +436,26 @@ app.post('/api/seatalk/webhook', async (req, res) => {
        if (content) {
          let senderName = event.sender_employee_info?.en_name || event.sender_employee_info?.name;
          let senderEmail = event.sender_employee_info?.email || '';
-         const empCode = event.sender_employee_info?.employee_code || event.employee_code || '';
+         const empCode = event.sender_employee_info?.employee_code || event.message?.sender?.employee_code || event.employee_code || '';
          if (empCode && (!senderName || !senderEmail)) {
-           const profile = await getEmployeeProfile(empCode);
-           if (!senderName) senderName = profile.name;
-           if (!senderEmail) senderEmail = profile.email;
+           const groupInfo = await getGroupInfo(event.group_id);
+           if (groupInfo && groupInfo.group_user_list) {
+             const member = groupInfo.group_user_list.find((u: any) => u.employee_code === empCode);
+             if (member) {
+               if (!senderName) senderName = member.name;
+               if (!senderEmail) senderEmail = member.email;
+             }
+           }
+           if (!senderName || !senderEmail) {
+             const profile = await getEmployeeProfile(empCode);
+             if (!senderName) senderName = profile.name;
+             if (!senderEmail) senderEmail = profile.email;
+           }
          }
          if (!senderName) senderName = empCode || 'User';
+         if (senderEmail) {
+           senderName = `${senderName} (${senderEmail})`;
+         }
 
          const conv = ensureConversation({ chat_type: 'group', group_id: event.group_id, group_name: event.group_name || event.group_id });
          saveMessage((conv as any).id, { sender: 'user', sender_name: senderName, content, employee_code: empCode, group_id: event.group_id, message_id: event.message_id });

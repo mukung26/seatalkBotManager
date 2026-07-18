@@ -591,13 +591,18 @@ async function initSeaTalkStream(env, chatType, targetId, threadId = null, quote
       if (data.code === 0 && data.stream_id) {
         const streamId = data.stream_id;
         let seq = 1;
-        let lastCallTime = 0;
 
-        return async (fullContent, isFinal) => {
-          const now = Date.now();
-          if (!isFinal && now - lastCallTime < 250) return;
-          lastCallTime = now;
+        // High fidelity typing simulation state
+        let targetText = "";
+        let currentTypedText = "";
+        let isAiFinished = false;
+        let isTypingLoopRunning = false;
+        let typingPromiseResolver = null;
+        const typingFinishedPromise = new Promise(resolve => {
+          typingPromiseResolver = resolve;
+        });
 
+        const sendUpdate = async (contentStr, finishFlag) => {
           const updateEndpoint = chatType === "group"
             ? `${SEATALK_API}/messaging/v2/group_chat/update_stream`
             : `${SEATALK_API}/messaging/v2/single_chat/update_stream`;
@@ -605,8 +610,8 @@ async function initSeaTalkStream(env, chatType, targetId, threadId = null, quote
           const updateBody = {
             stream_id: streamId,
             seq: seq++,
-            finish: isFinal,
-            message: { text: { format: 1, content: fullContent } }
+            finish: finishFlag,
+            message: { text: { format: 1, content: contentStr } }
           };
 
           if (chatType === "group") updateBody.group_id = targetId;
@@ -632,6 +637,53 @@ async function initSeaTalkStream(env, chatType, targetId, threadId = null, quote
           } catch (err) {
             console.error("update_stream exception:", err);
             await logEvent(env, "error", "update_stream exception", { error: err.toString() });
+          }
+        };
+
+        const runTypingLoop = async () => {
+          isTypingLoopRunning = true;
+          while (true) {
+            if (currentTypedText === targetText) {
+              if (isAiFinished) {
+                // We've typed everything and AI is done. Send final finish chunk.
+                await sendUpdate(targetText, true);
+                if (typingPromiseResolver) typingPromiseResolver();
+                break;
+              } else {
+                // Caught up with AI generation, but AI is still typing. Wait for more content.
+                await new Promise(r => setTimeout(r, 100));
+                continue;
+              }
+            }
+
+            // Determine size of next typed chunk to simulate typing pacing
+            const remaining = targetText.length - currentTypedText.length;
+            // Type a dynamic number of characters: 3-6 chars normally, up to 15 chars if lagging behind
+            const charsToType = Math.max(3, Math.min(15, Math.ceil(remaining * 0.15)));
+            
+            currentTypedText = targetText.slice(0, currentTypedText.length + charsToType);
+            
+            // Send intermediate update
+            await sendUpdate(currentTypedText, false);
+            
+            // Pace updates organically: 80ms to 150ms depending on chunk size to feel realistic
+            const delay = Math.max(80, Math.min(150, 150 - (charsToType * 5)));
+            await new Promise(r => setTimeout(r, delay));
+          }
+          isTypingLoopRunning = false;
+        };
+
+        return async (fullContent, isFinal) => {
+          targetText = fullContent || "";
+          isAiFinished = isFinal;
+
+          if (!isTypingLoopRunning && targetText.length > 0) {
+            runTypingLoop();
+          }
+
+          if (isFinal) {
+            // Block the worker from exiting until all typing has completed and the finish chunk is sent
+            await typingFinishedPromise;
           }
         };
       }
