@@ -340,6 +340,38 @@ function parseReplyMessage(reply) {
   return { text, messageObj };
 }
 
+function parseTime(timeStr) {
+  if (!timeStr || typeof timeStr !== "string") return null;
+  const cleaned = timeStr.trim().toUpperCase();
+  
+  // Try matching HH:MM AM/PM or H:MM AM/PM
+  const ampmMatch = cleaned.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (ampmMatch) {
+    let hours = parseInt(ampmMatch[1], 10);
+    const minutes = parseInt(ampmMatch[2], 10);
+    const meridian = ampmMatch[3].toUpperCase();
+    
+    if (meridian === "PM" && hours < 12) {
+      hours += 12;
+    } else if (meridian === "AM" && hours === 12) {
+      hours = 0;
+    }
+    return { hours, minutes };
+  }
+  
+  // Try matching standard 24-hour HH:MM or H:MM
+  const normMatch = cleaned.match(/^(\d{1,2}):(\d{2})$/);
+  if (normMatch) {
+    const hours = parseInt(normMatch[1], 10);
+    const minutes = parseInt(normMatch[2], 10);
+    if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+      return { hours, minutes };
+    }
+  }
+  
+  return null;
+}
+
 async function runScheduledBroadcasts(env) {
   try {
     if (!env.DB) return;
@@ -353,16 +385,14 @@ async function runScheduledBroadcasts(env) {
     const offset = 8 * 60 * 60 * 1000;
     const localNow = new Date(now.getTime() + offset);
     const dayOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][localNow.getUTCDay()];
-    const currentHourStr = localNow.getUTCHours().toString().padStart(2, "0");
-    const currentMinStr = localNow.getUTCMinutes().toString().padStart(2, "0");
-    const currentTimeStr = `${currentHourStr}:${currentMinStr}`;
     const localNowDateStr = localNow.toISOString().split("T")[0];
 
     for (const b of results) {
       let isDue = false;
       const sched = b.scheduled_at;
-      const isDaily = sched && sched.length === 5 && sched.includes(":");
-      const isWeekly = sched && sched.includes("T") && sched.length < 15;
+      
+      const isDaily = !!(sched && parseTime(sched));
+      const isWeekly = !!(sched && sched.includes("T") && parseTime(sched.split("T")[1]));
       const isRecurring = isDaily || isWeekly;
 
       // If it's recurring, verify it hasn't already been sent today
@@ -381,16 +411,30 @@ async function runScheduledBroadcasts(env) {
 
       if (!sched || sched === "immediate") {
         isDue = true;
-      } else if (isDaily) {
-        isDue = currentTimeStr >= sched;
-      } else if (isWeekly) {
-        const parts = sched.split("T");
-        if (parts.length === 2 && dayOfWeek === parts[0] && currentTimeStr >= parts[1]) {
-          isDue = true;
+      } else {
+        const timeObj = parseTime(sched);
+        if (timeObj) {
+          const currentTotalMinutes = localNow.getUTCHours() * 60 + localNow.getUTCMinutes();
+          const scheduledTotalMinutes = timeObj.hours * 60 + timeObj.minutes;
+          if (currentTotalMinutes >= scheduledTotalMinutes) {
+            isDue = true;
+          }
+        } else if (sched.includes("T")) {
+          const parts = sched.split("T");
+          if (parts.length === 2 && dayOfWeek === parts[0]) {
+            const weeklyTimeObj = parseTime(parts[1]);
+            if (weeklyTimeObj) {
+              const currentTotalMinutes = localNow.getUTCHours() * 60 + localNow.getUTCMinutes();
+              const scheduledTotalMinutes = weeklyTimeObj.hours * 60 + weeklyTimeObj.minutes;
+              if (currentTotalMinutes >= scheduledTotalMinutes) {
+                isDue = true;
+              }
+            }
+          }
+        } else if (sched.length >= 15) {
+          // ISO string fallback
+          isDue = now >= new Date(sched);
         }
-      } else if (sched.length >= 15) {
-        // ISO string fallback
-        isDue = now >= new Date(sched);
       }
 
       if (!isDue) continue;
