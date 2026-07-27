@@ -168,6 +168,7 @@ function LazyTab({ active, children }: { active: boolean, children: React.ReactN
 
   if (!hasBeenActive) return null;
 
+
   return (
     <div className={`absolute inset-0 ${active ? "z-10" : "hidden"}`}>
       {children}
@@ -3778,6 +3779,7 @@ function AutoReplyRules() {
     }
   };
 
+
   return (
     <div className="h-full overflow-y-auto p-6 md:p-10 bg-black/50">
       <div className="max-w-4xl mx-auto">
@@ -4368,6 +4370,12 @@ function SettingsPanel() {
   const [isAuthorizing, setIsAuthorizing] = useState(false);
   const [hasToken, setHasToken] = useState(false);
 
+  const [eqEnabled, setEqEnabled] = useState("disabled");
+  const [eqTargetType, setEqTargetType] = useState("group");
+  const [eqTargetId, setEqTargetId] = useState("");
+  const [savingEq, setSavingEq] = useState(false);
+
+
   useEffect(() => {
     setWebhookUrl(
       getApiUrl("/api/seatalk/webhook")
@@ -4381,6 +4389,12 @@ function SettingsPanel() {
           sheetSettings.spreadsheet_id || "1E3MrpeH-SjUEO2RanC1wJUsZdqcMkweY0CZMWpc51QM",
         );
         setAppScriptUrl(sheetSettings.app_script_url || "");
+
+        const eqSettings = data.earthquake_alerts || {};
+        setEqEnabled(eqSettings.enabled ? "enabled" : "disabled");
+        setEqTargetType(eqSettings.target_type || "group");
+        setEqTargetId(eqSettings.target_value || "");
+
         setHasToken(!!sheetSettings.access_token);
       } catch (e) {
         console.log("Failed loading settings", e);
@@ -4432,6 +4446,23 @@ function SettingsPanel() {
     }
   };
 
+
+  const saveEarthquakeSettings = async () => {
+    setSavingEq(true);
+    try {
+      await api.saveSetting("earthquake_alerts", {
+        enabled: eqEnabled === "enabled",
+        target_type: eqTargetType,
+        target_value: eqTargetId
+      });
+      toast.success("Earthquake settings saved!");
+    } catch (e) {
+      toast.error("Failed to save settings");
+    } finally {
+      setSavingEq(false);
+    }
+  };
+
   return (
     <div className="h-full overflow-y-auto p-6 md:p-10 bg-black/50">
       <div className="max-w-3xl mx-auto">
@@ -4447,6 +4478,66 @@ function SettingsPanel() {
             <Download size={16} /> Download Full Code Dump
           </a>
         </div>
+
+        
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <span className="text-red-500">🌋</span>
+              Philippine Earthquake Alerts
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm text-[#888888]">
+            <p>
+              Automatically monitor the USGS Earthquake API for earthquakes in the Philippines.
+              If a new earthquake (&gt;4.5 magnitude) is detected, the bot will send an immediate alert.
+            </p>
+            <div className="space-y-4 pt-2">
+              <div className="bg-[#222]/50 p-4 rounded-lg space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-[#a1a1aa] uppercase">Status</label>
+                    <Select value={eqEnabled} onValueChange={setEqEnabled}>
+                      <SelectTrigger className="bg-[#111] border-input">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="enabled">Enabled</SelectItem>
+                        <SelectItem value="disabled">Disabled</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-[#a1a1aa] uppercase">Target Type</label>
+                    <Select value={eqTargetType} onValueChange={setEqTargetType}>
+                      <SelectTrigger className="bg-[#111] border-input">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="group">Group Chat</SelectItem>
+                        <SelectItem value="private">Private Message</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-[#a1a1aa] uppercase">Target ID (Group or Employee Code)</label>
+                    <Input
+                      placeholder="e.g. NjIz..."
+                      value={eqTargetId}
+                      onChange={(e) => setEqTargetId(e.target.value)}
+                      className="bg-[#111]"
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end pt-2">
+                  <Button size="sm" onClick={saveEarthquakeSettings} disabled={savingEq}>
+                    {savingEq ? "Saving..." : "Save Earthquake Settings"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         <Card className="mb-6">
           <CardHeader>
