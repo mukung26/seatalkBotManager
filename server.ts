@@ -1005,7 +1005,7 @@ async function runScheduledBroadcastsLocal() {
         if (timeObj) {
           const currentTotalMinutes = localNow.getUTCHours() * 60 + localNow.getUTCMinutes();
           const scheduledTotalMinutes = timeObj.hours * 60 + timeObj.minutes;
-          if (currentTotalMinutes >= scheduledTotalMinutes) {
+          if (currentTotalMinutes >= scheduledTotalMinutes && currentTotalMinutes <= scheduledTotalMinutes + 5) {
             isDue = true;
           }
         } else if (sched.includes("T")) {
@@ -1015,7 +1015,7 @@ async function runScheduledBroadcastsLocal() {
             if (weeklyTimeObj) {
               const currentTotalMinutes = localNow.getUTCHours() * 60 + localNow.getUTCMinutes();
               const scheduledTotalMinutes = weeklyTimeObj.hours * 60 + weeklyTimeObj.minutes;
-              if (currentTotalMinutes >= scheduledTotalMinutes) {
+              if (currentTotalMinutes >= scheduledTotalMinutes && currentTotalMinutes <= scheduledTotalMinutes + 5) {
                 isDue = true;
               }
             }
