@@ -1089,7 +1089,7 @@ async function checkEarthquakesLocal() {
     const res = await fetch("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson");
     if (!res.ok) return;
     const data = await res.json();
-    const phEarthquakes = data.features.filter((f: any) => f.properties.place && f.properties.place.toLowerCase().includes("mindanao"));
+    const phEarthquakes = data.features.filter((f: any) => f.properties.place && f.properties.place.toLowerCase().includes("philippines") && f.geometry && f.geometry.coordinates && f.geometry.coordinates[1] >= 5.0 && f.geometry.coordinates[1] <= 10.5 && f.geometry.coordinates[0] >= 121.5 && f.geometry.coordinates[0] <= 127.0);
     
     if (phEarthquakes.length === 0) return;
     

@@ -4481,7 +4481,7 @@ function SettingsPanel() {
       if (!res.ok) throw new Error("Failed to fetch USGS data");
       const data = await res.json();
       const mindanaoEarthquakes = data.features.filter((f: any) => 
-        f.properties.place && f.properties.place.toLowerCase().includes("mindanao")
+        f.properties.place && f.properties.place.toLowerCase().includes("philippines") && f.geometry.coordinates[1] >= 5.0 && f.geometry.coordinates[1] <= 10.5 && f.geometry.coordinates[0] >= 121.5 && f.geometry.coordinates[0] <= 127.0
       );
       
       if (mindanaoEarthquakes.length === 0) {
