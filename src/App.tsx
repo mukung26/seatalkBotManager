@@ -4374,6 +4374,7 @@ function SettingsPanel() {
   const [eqTargetType, setEqTargetType] = useState("group");
   const [eqTargetId, setEqTargetId] = useState("");
   const [savingEq, setSavingEq] = useState(false);
+  const [testingEq, setTestingEq] = useState(false);
 
 
   useEffect(() => {
@@ -4446,6 +4447,27 @@ function SettingsPanel() {
     }
   };
 
+
+
+  const testEarthquakeAlert = async () => {
+    if (!eqTargetId) {
+      toast.error("Please specify a Target ID first");
+      return;
+    }
+    setTestingEq(true);
+    try {
+      await api.sendMessage({
+        chat_type: eqTargetType,
+        target_id: eqTargetId,
+        content: "🚨 **TEST EARTHQUAKE ALERT** 🚨\n\nThis is a test ping to verify the Earthquake Alert system is working correctly.\n\nTarget: " + eqTargetId
+      });
+      toast.success("Test alert sent successfully!");
+    } catch (e) {
+      toast.error("Failed to send test alert");
+    } finally {
+      setTestingEq(false);
+    }
+  };
 
   const saveEarthquakeSettings = async () => {
     setSavingEq(true);
@@ -4529,7 +4551,10 @@ function SettingsPanel() {
                     />
                   </div>
                 </div>
-                <div className="flex justify-end pt-2">
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="outline" size="sm" onClick={testEarthquakeAlert} disabled={testingEq || !eqTargetId} className="border-blue-800 hover:bg-blue-900/30">
+                    {testingEq ? "Testing..." : "Test Ping"}
+                  </Button>
                   <Button size="sm" onClick={saveEarthquakeSettings} disabled={savingEq}>
                     {savingEq ? "Saving..." : "Save Earthquake Settings"}
                   </Button>
