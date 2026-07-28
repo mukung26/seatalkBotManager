@@ -381,10 +381,10 @@ async function checkEarthquakes(env) {
     const eqConfig = JSON.parse(results[0].value);
     if (!eqConfig.enabled || !eqConfig.target_type || !eqConfig.target_value) return;
     
-    const res = await fetch("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson");
+    const res = await fetch("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/1.0_day.geojson");
     if (!res.ok) return;
     const data = await res.json();
-    const phEarthquakes = data.features.filter((f) => f.properties.place && f.properties.place.toLowerCase().includes("philippines"));
+    const phEarthquakes = data.features.filter((f) => f.properties.place && f.properties.place.toLowerCase().includes("mindanao"));
     if (phEarthquakes.length === 0) return;
     
     const { results: lastEqResults } = await env.DB.prepare("SELECT value FROM settings WHERE key = 'last_earthquake_time'").all();
@@ -402,7 +402,7 @@ async function checkEarthquakes(env) {
       const eqTime = eq.properties.time;
       if (eqTime > lastEqTime) {
         if (eqTime > maxTime) maxTime = eqTime;
-        const msgText = `🚨 **EARTHQUAKE ALERT (Philippines)** 🚨\n\n**Magnitude:** ${eq.properties.mag}\n**Location:** ${eq.properties.place}\n**Time:** ${new Date(eqTime).toLocaleString("en-US", { timeZone: "Asia/Manila" })}\n\n**Details:** ${eq.properties.url}`;
+        const msgText = `🚨 **EARTHQUAKE ALERT (Mindanao)** 🚨\n\n**Magnitude:** ${eq.properties.mag}\n**Location:** ${eq.properties.place}\n**Time:** ${new Date(eqTime).toLocaleString("en-US", { timeZone: "Asia/Manila" })}\n\n**Details:** ${eq.properties.url}`;
         
         try {
           if (eqConfig.target_type === "private") {
