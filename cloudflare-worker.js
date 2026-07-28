@@ -381,7 +381,7 @@ async function checkEarthquakes(env) {
     const eqConfig = JSON.parse(results[0].value);
     if (!eqConfig.enabled || !eqConfig.target_type || !eqConfig.target_value) return;
     
-    const res = await fetch("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/1.0_day.geojson");
+    const res = await fetch("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson");
     if (!res.ok) return;
     const data = await res.json();
     const phEarthquakes = data.features.filter((f) => f.properties.place && f.properties.place.toLowerCase().includes("mindanao"));

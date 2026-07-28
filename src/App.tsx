@@ -4477,7 +4477,7 @@ function SettingsPanel() {
     }
     setTestingEq(true);
     try {
-      const res = await fetch("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/1.0_day.geojson");
+      const res = await fetch("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_month.geojson");
       if (!res.ok) throw new Error("Failed to fetch USGS data");
       const data = await res.json();
       const mindanaoEarthquakes = data.features.filter((f: any) => 
@@ -4485,7 +4485,7 @@ function SettingsPanel() {
       );
       
       if (mindanaoEarthquakes.length === 0) {
-        toast.info("No recent >4.5 earthquakes found for Mindanao.");
+        toast.info("No recent earthquakes found for Mindanao in the past month.");
         setTestingEq(false);
         return;
       }
@@ -4550,7 +4550,7 @@ function SettingsPanel() {
           <CardContent className="space-y-4 text-sm text-[#888888]">
             <p>
               Automatically monitor the USGS Earthquake API for earthquakes in the Mindanao region.
-              If a new earthquake (&gt;4.5 magnitude) is detected, the bot will send an immediate alert.
+              If a new earthquake (any magnitude) is detected, the bot will send an immediate alert.
             </p>
             <div className="space-y-4 pt-2">
               <div className="bg-[#222]/50 p-4 rounded-lg space-y-3">
