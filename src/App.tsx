@@ -801,7 +801,7 @@ function ChatInterface() {
     setElementsDefault([
       {
         element_type: "title",
-        title: { text: "📢 @All 2AM" },
+        title: { text: "Attendance 2AM" },
       },
       {
         element_type: "description",
@@ -1435,7 +1435,7 @@ function ChatInterface() {
     setInput("");
 
     // Auto-parse manual mentions
-    txt = txt.replace(/@all(?:b)?/gi, '<mention-tag target="seatalk://all"/>');
+    txt = txt.replace(/@all(?:b)?/gi, '<mention-tag target="seatalk://user?id=0"/>');
     txt = txt.replace(
       /(^|\s)@([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g,
       '$1<mention-tag target="seatalk://user?email=$2"/>',
@@ -3580,13 +3580,13 @@ function AutoReplyRules() {
         elements: [
           {
             element_type: "title",
-            title: { text: "📢 @All 2AM" },
+            title: { text: "Attendance 2AM" },
           },
           {
             element_type: "description",
             description: {
               format: 1,
-              text: "Please fill out these forms if you're present or filing for RDOT/OT. If you haven't submitted your entry here, you may be marked as \"absent\" or \"off\".\n\n[Daily Attendance Form](https://forms.gle/8sZ9QEPs7oSEFJFk9)\n[RDOT/OT Form](https://forms.gle/EFhd8dDNJDhVZwdVA)",
+              text: "📢 <mention-tag target=\"seatalk://user?id=0\"/>\nPlease fill out these forms if you're present or filing for RDOT/OT. If you haven't submitted your entry here, you may be marked as \"absent\" or \"off\".\n\n[Daily Attendance Form](https://forms.gle/8sZ9QEPs7oSEFJFk9)\n[RDOT/OT Form](https://forms.gle/EFhd8dDNJDhVZwdVA)",
             },
           },
           {
@@ -5079,13 +5079,13 @@ function BroadcastsScheduler() {
           elements: [
             {
               element_type: "title",
-              title: { text: "📢 @All 2AM" },
+              title: { text: "Attendance 2AM" },
             },
             {
               element_type: "description",
               description: {
                 format: 1,
-                text: "Please fill out these forms if you're present or filing for RDOT/OT. If you haven't submitted your entry here, you may be marked as \"absent\" or \"off\".\n\n[Daily Attendance Form](https://forms.gle/8sZ9QEPs7oSEFJFk9)\n[RDOT/OT Form](https://forms.gle/EFhd8dDNJDhVZwdVA)",
+                text: "📢 <mention-tag target=\"seatalk://user?id=0\"/>\nPlease fill out these forms if you're present or filing for RDOT/OT. If you haven't submitted your entry here, you may be marked as \"absent\" or \"off\".\n\n[Daily Attendance Form](https://forms.gle/8sZ9QEPs7oSEFJFk9)\n[RDOT/OT Form](https://forms.gle/EFhd8dDNJDhVZwdVA)",
               },
             },
             {

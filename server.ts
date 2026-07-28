@@ -132,48 +132,61 @@ function processMessageMentions(messageObj: any) {
   if (!messageObj) return messageObj;
   
   let hasAtAll = false;
+  let mentionedEmails = new Set();
   
-  const replaceMentions = (val: any): any => {
-    if (typeof val === 'string') {
-      const replaced = val.replace(/(^|\s)@(all|所有人)(?=\s|$|[.,!?;:])/gi, '$1<mention-tag target="seatalk://user?id=0"/>');
-      if (replaced !== val) hasAtAll = true;
-      
-      // Also handle the legacy UI <mention email="x"></mention> replacements if needed
-      let finalStr = replaced;
-      const mentionRegex = /<mention\s+email=["']([^"']+)["']>\s*<\/mention>/gi;
-      finalStr = finalStr.replace(mentionRegex, (m, email) => {
-        return `<mention-tag target="seatalk://user?email=${email}"/>`;
-      });
-      
-      const oldAtAllRegex = /<mention>\s*<\/mention>/gi;
-      if (oldAtAllRegex.test(finalStr)) {
-        hasAtAll = true;
-        finalStr = finalStr.replace(oldAtAllRegex, '<mention-tag target="seatalk://user?id=0"/>');
-      }
-      return finalStr;
+  const replaceStr = (val: string): string => {
+    if (typeof val !== 'string') return val;
+    let replaced = val.replace(/(^|\s)@(all|所有人)(?=\s|$|[.,!?;:])/gi, '$1<mention-tag target="seatalk://user?id=0"/>');
+    replaced = replaced.replace(/(^|\s)@([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g, '$1<mention-tag target="seatalk://user?email=$2"/>');
+    
+    const mentionRegex = /<mention\s+email=["']([^"']+)["']>\s*<\/mention>/gi;
+    replaced = replaced.replace(mentionRegex, (m, email) => `<mention-tag target="seatalk://user?email=${email}"/>`);
+    
+    const oldAtAllRegex = /<mention>\s*<\/mention>/gi;
+    replaced = replaced.replace(oldAtAllRegex, '<mention-tag target="seatalk://user?id=0"/>');
+
+    if (/<mention-tag[^>]*id=["']?0["']?[^>]*>/.test(replaced) || /seatalk:\/\/user\?id=0/.test(replaced)) {
+      hasAtAll = true;
     }
-    if (Array.isArray(val)) {
-      return val.map(replaceMentions);
+    
+    const emailMatch = /seatalk:\/\/user\?email=([^"'>]+)/gi;
+    let m;
+    while ((m = emailMatch.exec(replaced)) !== null) {
+      mentionedEmails.add(m[1]);
     }
-    if (typeof val === 'object' && val !== null) {
-      const newObj: any = {};
-      for (const key in val) {
-        newObj[key] = replaceMentions(val[key]);
-      }
-      return newObj;
-    }
-    return val;
+    return replaced;
   };
 
-  const newObj = replaceMentions(messageObj);
-  
-  // Note: For SeaTalk API v2, the mention-tag inside content is sufficient for @all
-  // but adding at_all = true for text/markdown just in case.
+  const newObj = JSON.parse(JSON.stringify(messageObj));
+
+  // Only apply to supported fields
+  if (newObj.tag === "text" && newObj.text) {
+    if (newObj.text.content) newObj.text.content = replaceStr(newObj.text.content);
+  } else if (newObj.tag === "markdown" && newObj.markdown) {
+    if (newObj.markdown.content) newObj.markdown.content = replaceStr(newObj.markdown.content);
+  } else if (newObj.tag === "interactive_message" && newObj.interactive_message && Array.isArray(newObj.interactive_message.elements)) {
+    newObj.interactive_message.elements.forEach(el => {
+      if (el.element_type === "description" && el.description && el.description.text) {
+        el.description.text = replaceStr(el.description.text);
+        // Force format 1 (markdown) if there are mentions, otherwise SeaTalk ignores it!
+        if (/<mention-tag/.test(el.description.text)) {
+          el.description.format = 1;
+        }
+      }
+    });
+  }
+
   if (hasAtAll) {
+    if (newObj.tag === "text" && newObj.text) newObj.text.at_all = true;
+    else if (newObj.tag === "markdown" && newObj.markdown) newObj.markdown.at_all = true;
+  }
+  
+  if (mentionedEmails.size > 0) {
+    const emailsArray = Array.from(mentionedEmails);
     if (newObj.tag === "text" && newObj.text) {
-      newObj.text.at_all = true;
+      newObj.text.mentioned_email_list = [...new Set([...(newObj.text.mentioned_email_list || []), ...emailsArray])];
     } else if (newObj.tag === "markdown" && newObj.markdown) {
-      newObj.markdown.at_all = true;
+      newObj.markdown.mentioned_email_list = [...new Set([...(newObj.markdown.mentioned_email_list || []), ...emailsArray])];
     }
   }
   
