@@ -130,72 +130,54 @@ async function getAccessToken() {
 
 function processMessageMentions(messageObj: any) {
   if (!messageObj) return messageObj;
-  const messageData = JSON.parse(JSON.stringify(messageObj));
-
-  if (messageData.tag === "text" && messageData.text) {
-    let content = messageData.text.content || "";
-    const emails = messageData.text.mentioned_email_list || [];
-    let atAll = messageData.text.at_all || false;
-
-    const mentionRegex = /<mention\s+email=["']([^"']+)["']>\s*<\/mention>/gi;
-    let match;
-    while ((match = mentionRegex.exec(content)) !== null) {
-      if (!emails.includes(match[1])) {
-        emails.push(match[1]);
+  
+  let hasAtAll = false;
+  
+  const replaceMentions = (val: any): any => {
+    if (typeof val === 'string') {
+      const replaced = val.replace(/(^|\s)@(all|所有人)(?=\s|$|[.,!?;:])/gi, '$1<mention-tag target="seatalk://user?id=0"/>');
+      if (replaced !== val) hasAtAll = true;
+      
+      // Also handle the legacy UI <mention email="x"></mention> replacements if needed
+      let finalStr = replaced;
+      const mentionRegex = /<mention\s+email=["']([^"']+)["']>\s*<\/mention>/gi;
+      finalStr = finalStr.replace(mentionRegex, (m, email) => {
+        return `<mention-tag target="seatalk://user?email=${email}"/>`;
+      });
+      
+      const oldAtAllRegex = /<mention>\s*<\/mention>/gi;
+      if (oldAtAllRegex.test(finalStr)) {
+        hasAtAll = true;
+        finalStr = finalStr.replace(oldAtAllRegex, '<mention-tag target="seatalk://user?id=0"/>');
       }
+      return finalStr;
     }
-
-    content = content.replace(mentionRegex, (m, email) => {
-      const name = email.split("@")[0];
-      return `@${name}`;
-    });
-
-    const atAllRegex = /<mention>\s*<\/mention>/gi;
-    if (atAllRegex.test(content)) {
-      atAll = true;
-      content = content.replace(atAllRegex, "@all");
+    if (Array.isArray(val)) {
+      return val.map(replaceMentions);
     }
-
-    messageData.text.content = content;
-    if (emails.length > 0) {
-      messageData.text.mentioned_email_list = emails;
-    }
-    if (atAll) {
-      messageData.text.at_all = true;
-    }
-  } else if (messageData.tag === "markdown" && messageData.markdown) {
-    let content = messageData.markdown.content || "";
-    const emails = messageData.markdown.mentioned_email_list || [];
-    let atAll = messageData.markdown.at_all || false;
-
-    const mentionRegex = /<mention\s+email=["']([^"']+)["']>\s*<\/mention>/gi;
-    let match;
-    while ((match = mentionRegex.exec(content)) !== null) {
-      if (!emails.includes(match[1])) {
-        emails.push(match[1]);
+    if (typeof val === 'object' && val !== null) {
+      const newObj: any = {};
+      for (const key in val) {
+        newObj[key] = replaceMentions(val[key]);
       }
+      return newObj;
     }
+    return val;
+  };
 
-    content = content.replace(mentionRegex, (m, email) => {
-      const name = email.split("@")[0];
-      return `@${name}`;
-    });
-
-    const atAllRegex = /<mention>\s*<\/mention>/gi;
-    if (atAllRegex.test(content)) {
-      atAll = true;
-      content = content.replace(atAllRegex, "@all");
-    }
-
-    messageData.markdown.content = content;
-    if (emails.length > 0) {
-      messageData.markdown.mentioned_email_list = emails;
-    }
-    if (atAll) {
-      messageData.markdown.at_all = true;
+  const newObj = replaceMentions(messageObj);
+  
+  // Note: For SeaTalk API v2, the mention-tag inside content is sufficient for @all
+  // but adding at_all = true for text/markdown just in case.
+  if (hasAtAll) {
+    if (newObj.tag === "text" && newObj.text) {
+      newObj.text.at_all = true;
+    } else if (newObj.tag === "markdown" && newObj.markdown) {
+      newObj.markdown.at_all = true;
     }
   }
-  return messageData;
+  
+  return newObj;
 }
 
 const profileCache = new Map<string, { name: string, email: string }>();
@@ -282,7 +264,7 @@ async function resolveEmployeeCode(targetId: string) {
 async function sendPrivateMessage(employeeCode: string, text: string, messageObj?: any) {
   const token = await getAccessToken();
   if (!token) return;
-  const messageData = messageObj ? messageObj : processMessageMentions({ tag: 'text', text: { content: text } });
+  const messageData = processMessageMentions(messageObj ? messageObj : { tag: 'text', text: { content: text } });
   await fetch(`${SEATALK_API}/messaging/v2/single_chat`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -290,10 +272,31 @@ async function sendPrivateMessage(employeeCode: string, text: string, messageObj
   });
 }
 
+
+function processMentions(obj) {
+  const replaceMentions = (val) => {
+    if (typeof val === 'string') {
+      return val.replace(/(^|\s)@(all|所有人)(?=\s|$|[.,!?;:])/gi, '$1<mention-tag target="seatalk://user?id=0"/>');
+    }
+    if (Array.isArray(val)) {
+      return val.map(replaceMentions);
+    }
+    if (typeof val === 'object' && val !== null) {
+      const newObj = {};
+      for (const key in val) {
+        newObj[key] = replaceMentions(val[key]);
+      }
+      return newObj;
+    }
+    return val;
+  };
+  return replaceMentions(obj);
+}
+
 async function sendGroupMessage(groupId: string, text: string, threadId?: string, messageObj?: any) {
   const token = await getAccessToken();
   if (!token) return;
-  const messageData = messageObj ? messageObj : processMessageMentions({ tag: 'text', text: { content: text } });
+  const messageData = processMessageMentions(messageObj ? messageObj : { tag: 'text', text: { content: text } });
   const body: any = { group_id: groupId, message: messageData };
   if (threadId) body.thread_id = threadId;
   await fetch(`${SEATALK_API}/messaging/v2/group_chat`, {

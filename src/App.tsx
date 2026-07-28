@@ -1435,7 +1435,7 @@ function ChatInterface() {
     setInput("");
 
     // Auto-parse manual mentions
-    txt = txt.replace(/@all(?:b)?/gi, '<mention-tag target="seatalk://user?id=0"/>');
+    txt = txt.replace(/@all(?:b)?/gi, '<mention-tag target="seatalk://all"/>');
     txt = txt.replace(
       /(^|\s)@([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g,
       '$1<mention-tag target="seatalk://user?email=$2"/>',

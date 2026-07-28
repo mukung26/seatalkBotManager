@@ -195,7 +195,8 @@ async function getEmployeeProfile(env, employeeCode) {
 async function sendPrivateMessage(env, employeeCode, text, messageObj, threadId) {
   const token = await getAccessToken(env);
   const resolvedCode = await resolveEmployeeCode(env, employeeCode);
-  const messageData = messageObj ? JSON.parse(JSON.stringify(messageObj)) : { tag: "text", text: { content: text } };
+  let messageData = messageObj ? JSON.parse(JSON.stringify(messageObj)) : { tag: "text", text: { content: text } };
+  messageData = processMentions(messageData);
   if (threadId) {
     messageData.thread_id = threadId;
     messageData.quoted_message_id = threadId; 
@@ -209,9 +210,60 @@ async function sendPrivateMessage(env, employeeCode, text, messageObj, threadId)
   if (data.code !== 0) throw new Error(`SeaTalk API Error: ${JSON.stringify(data)}`);
 }
 
+
+function processMentions(messageObj) {
+  if (!messageObj) return messageObj;
+  
+  let hasAtAll = false;
+  
+  const replaceMentions = (val) => {
+    if (typeof val === 'string') {
+      const replaced = val.replace(/(^|\s)@(all|所有人)(?=\s|$|[.,!?;:])/gi, '$1<mention-tag target="seatalk://user?id=0"/>');
+      if (replaced !== val) hasAtAll = true;
+      
+      let finalStr = replaced;
+      const mentionRegex = /<mention\s+email=["']([^"']+)["']>\s*<\/mention>/gi;
+      finalStr = finalStr.replace(mentionRegex, (m, email) => {
+        return `<mention-tag target="seatalk://user?email=${email}"/>`;
+      });
+      
+      const oldAtAllRegex = /<mention>\s*<\/mention>/gi;
+      if (oldAtAllRegex.test(finalStr)) {
+        hasAtAll = true;
+        finalStr = finalStr.replace(oldAtAllRegex, '<mention-tag target="seatalk://user?id=0"/>');
+      }
+      return finalStr;
+    }
+    if (Array.isArray(val)) {
+      return val.map(replaceMentions);
+    }
+    if (typeof val === 'object' && val !== null) {
+      const newObj = {};
+      for (const key in val) {
+        newObj[key] = replaceMentions(val[key]);
+      }
+      return newObj;
+    }
+    return val;
+  };
+
+  const newObj = replaceMentions(messageObj);
+  
+  if (hasAtAll) {
+    if (newObj.tag === "text" && newObj.text) {
+      newObj.text.at_all = true;
+    } else if (newObj.tag === "markdown" && newObj.markdown) {
+      newObj.markdown.at_all = true;
+    }
+  }
+  
+  return newObj;
+}
+
 async function sendGroupMessage(env, groupId, text, threadId, messageObj) {
   const token = await getAccessToken(env);
-  const messageData = messageObj ? JSON.parse(JSON.stringify(messageObj)) : { tag: "text", text: { content: text } };
+  let messageData = messageObj ? JSON.parse(JSON.stringify(messageObj)) : { tag: "text", text: { content: text } };
+  messageData = processMentions(messageData);
   if (threadId) {
     messageData.thread_id = threadId;
     messageData.quoted_message_id = threadId; 
